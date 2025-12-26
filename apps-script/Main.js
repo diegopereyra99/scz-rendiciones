@@ -97,11 +97,13 @@ function runStage1Upload_() {
     rendicionId,
     gcsPrefix: GCS_PREFIX,
     manifestGcsUri: res.manifestGcsUri || null,
-    normalizedItems: (res.items || []).map(it => ({
+    normalizedItems: (res.items || []).map((it, idx) => ({
       gcsUri: it.normalized?.gcsUri,
-      mimeType: it.normalized?.mime
-      // gcsUri: it.normalized?.originalGcsUri,
-      // mimeType: it.normalized?.originalMime
+      mime: it.normalized?.mime,
+      mimeType: it.normalized?.mime, // compat
+      normalizedIndex: String(idx).padStart(4, '0'),
+      originalName: it.source?.originalName || null,
+      driveFileId: it.source?.driveFileId || null
     })).filter(x => !!x.gcsUri),
   });
 
@@ -155,13 +157,26 @@ function stage2_process_analyze() {
   }
 
   const uploadedFiles = st.normalizedItems;
-  const items = callGemini(uploadedFiles);   // GeminiClient.gs (tu implementación)
+  const gemRes = callGemini(uploadedFiles);   // GeminiClient.gs (tu implementación)
+  const comprobantes = extractComprobantes_(gemRes);
+  const ordenArchivos = extractOrdenArchivos_(gemRes);
+  const estadoCuenta = extractEstadoCuenta_(gemRes);
+
+  // Guardamos orden y estado para usarlos en finalize
+  jobStateSet_(Object.assign({}, st, {
+    lastOrdenArchivos: ordenArchivos || null,
+    lastEstadoCuenta: estadoCuenta || null
+  }));
 
   return {
     ok: true,
-    message: `Comprobantes detectados: ${items?.length || 0}.`,
-    items,
-    payload: { items }
+    message: `Comprobantes detectados: ${comprobantes?.length || 0}.`,
+    items: comprobantes,
+    payload: {
+      items: comprobantes,
+      ordenArchivos,
+      estadoCuenta
+    }
   };
 }
 
@@ -217,6 +232,11 @@ function stage3_generate_outputs(coverGcsUri) {
   assertAllChecksOk_();
 
   // 2) celdas a mandar (solo FIELD_COLUMN_MAP)
+  const orderedItems = reorderNormalizedItemsByOrder_(
+    st.normalizedItems || [],
+    st.lastOrdenArchivos || st.ordenArchivos || []
+  );
+
   const xlsmValues = buildXlsmValuesFromSheet_();
   if (!xlsmValues.length) throw new Error('No hay valores para mandar al XLSM.');
 
@@ -224,8 +244,8 @@ function stage3_generate_outputs(coverGcsUri) {
     rendicionId: st.rendicionId,
     inputs: {
       cover: coverGcsUri ? { gcsUri: coverGcsUri } : undefined,
-      normalizedItems: st.normalizedItems,
-      xlsmTemplate: {gcsUri: 'gs://scz-uy-rendiciones/templates/rendiciones_macro_template.xlsm'}, 
+      normalizedItems: orderedItems,
+      xlsmTemplate: {gcsUri: 'gs://scz-uy-rendiciones/templates/rendiciones_macro_template.xlsm'},
       xlsmValues
     },
     output: {
@@ -273,6 +293,94 @@ function stage3_download_outputs(pdfUri, xlsmUri) {
   return { ok: true, message: 'Archivos descargados a Drive.', payload: { saved, pdfUri, xlsmUri } };
 }
 
+
+/** ---------- Helpers ---------- */
+
+function extractComprobantes_(gemRes) {
+  if (!gemRes) return [];
+  if (Array.isArray(gemRes)) return gemRes;
+  if (Array.isArray(gemRes?.data)) return gemRes.data;
+  if (Array.isArray(gemRes?.comprobantes)) return gemRes.comprobantes;
+  if (Array.isArray(gemRes?.['comprobantes'])) return gemRes['comprobantes'];
+  return [];
+}
+
+function extractOrdenArchivos_(gemRes) {
+  if (!gemRes) return null;
+  const order = gemRes['orden archivos'] || gemRes.ordenArchivos || gemRes.orden_archivos || gemRes.order || null;
+  if (!Array.isArray(order)) return null;
+  const cleaned = order.map((o) => String(o || '').trim()).filter((o) => !!o);
+  return cleaned.length ? cleaned : null;
+}
+
+function extractEstadoCuenta_(gemRes) {
+  if (!gemRes) return null;
+  return gemRes['estado de cuenta'] || gemRes.estadoCuenta || gemRes.estado_cuenta || null;
+}
+
+function reorderNormalizedItemsByOrder_(items, orderList) {
+  if (!Array.isArray(items) || !items.length) return items || [];
+  if (!Array.isArray(orderList) || !orderList.length) return items;
+
+  const order = orderList
+    .map((o) => normalizeOrderToken_(o))
+    .filter((o) => !!o);
+  if (!order.length) return items;
+
+  const itemsWithIndex = items.map((item, idx) => {
+    return { item, idx, key: getItemNormalizedIndex_(item, idx) };
+  });
+
+  const byKey = new Map();
+  itemsWithIndex.forEach((entry) => {
+    if (entry.key && !byKey.has(entry.key)) byKey.set(entry.key, entry);
+  });
+
+  const orderedEntries = [];
+  const consumed = new Set();
+
+  order.forEach((k) => {
+    const entry = byKey.get(k);
+    if (entry && !consumed.has(entry)) {
+      orderedEntries.push(entry);
+      consumed.add(entry);
+    }
+  });
+
+  itemsWithIndex.forEach((entry) => {
+    if (!consumed.has(entry)) {
+      orderedEntries.push(entry);
+      consumed.add(entry);
+    }
+  });
+
+  return orderedEntries.map((e) => e.item);
+}
+
+function normalizeOrderToken_(token) {
+  if (token === null || token === undefined) return null;
+  const str = String(token).trim().toLowerCase();
+  if (!str) return null;
+  const cleaned = str.startsWith('f') ? str.slice(1) : str;
+  const m = cleaned.match(/^(\d{1,4})/);
+  if (!m) return null;
+  return m[1].padStart(4, '0');
+}
+
+function getItemNormalizedIndex_(item, fallbackIdx) {
+  if (!item) return null;
+  if (item.normalizedIndex !== undefined && item.normalizedIndex !== null) {
+    const s = String(item.normalizedIndex).trim();
+    if (s) return s.padStart(4, '0');
+  }
+  const uri = String(item.gcsUri || '').toLowerCase();
+  const m = uri.match(/\/(\d{4})_/);
+  if (m) return m[1];
+  if (fallbackIdx !== undefined && fallbackIdx !== null) {
+    return String(fallbackIdx).padStart(4, '0');
+  }
+  return null;
+}
 
 
 // function onOpen() {

@@ -73,14 +73,21 @@ function callGemini(uploadedFiles) {
   const schemaObj = JSON.parse(getSchemaJsonText());
 
   const userParts = [
-    { text: promptText }
+    { text: promptText + '\n\n'},
   ];
 
-  uploadedFiles.forEach((f) => {
+  uploadedFiles.forEach((f, i) => {
+    const idx = getItemNormalizedIndex_(f, i);
+    const ref = idx ? `f${idx}` : `f${String(i).padStart(4, '0')}`;
+
+    userParts.push({
+      text: `\n\nARCHIVO ${ref}:`
+    });
+
     userParts.push({
       fileData: {
         fileUri: f.gcsUri,
-        mimeType: f.mimeType || 'application/octet-stream'
+        mimeType: f.mime || f.mimeType || 'application/octet-stream'
       }
     });
   });
@@ -122,8 +129,22 @@ function callGemini(uploadedFiles) {
   }
 
   const parsed = JSON.parse(text);
-  if (Array.isArray(parsed)) return parsed;
   if (parsed && Array.isArray(parsed.data)) return parsed.data;
 
-  throw new Error('Unexpected JSON shape from model.');
+  return parsed;
+}
+
+function getItemNormalizedIndex_(item, fallbackIdx) {
+  if (!item) return null;
+  if (item.normalizedIndex !== undefined && item.normalizedIndex !== null) {
+    const s = String(item.normalizedIndex).trim();
+    if (s) return s.padStart(4, '0');
+  }
+  const uri = String(item.gcsUri || '').toLowerCase();
+  const m = uri.match(/\/(\d{4})_/);
+  if (m) return m[1];
+  if (fallbackIdx !== undefined && fallbackIdx !== null) {
+    return String(fallbackIdx).padStart(4, '0');
+  }
+  return null;
 }

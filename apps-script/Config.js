@@ -18,7 +18,7 @@ const GEMINI_ENDPOINT =
 
 const PROMPT_DOC_ID = '1kP0ZIsnkHwSFppuCc-Gl9-Hk39zaNWeaT--tf67AQ8w';
 const SYSTEM_DOC_ID = '1_FzB_GNV-Fm_aEfGE0TORtTtrI9AkB0wA8ZXPMFM6b4';
-const SCHEMA_FILE_ID = '1uB89nGWI6TQ0Pq2ylipBSodDu2qm9wcR';
+const SCHEMA_FILE_ID = '1ai53TISXDSZBG-TiGCbAKdSczd523C8j';
 
 // ✅ checkbox column (you changed this)
 const WARNINGS_OK_COL_LETTER = 'C';
