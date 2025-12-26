@@ -5,29 +5,59 @@
     <style>
       body { font-family: Arial, sans-serif; padding: 16px; }
       .muted { color: #666; font-size: 13px; margin-top: 6px; }
-      .box { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
+      .box { border: 1px solid #ddd; border-radius: 12px; padding: 14px; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,0.08); }
+      .title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+      #header { margin-bottom: 10px; }
       .row { display: flex; gap: 12px; align-items: center; }
       .spinner {
         width: 18px; height: 18px; border: 3px solid #ddd; border-top-color: #111;
-        border-radius: 50%; animation: spin 1s linear infinite;
+        border-radius: 50%;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
+      .spinner.small { width: 14px; height: 14px; border-width: 2px; }
+      .spinner.check { border-color: #0a7a28; border-top-color: #0a7a28; position: relative; }
+      .spinner.check::after {
+        content: '✓';
+        position: absolute;
+        top: -3px;
+        left: 3px;
+        color: #0a7a28;
+        font-weight: 700;
+        font-size: 12px;
+      }
+      .spinner.error { border-color: #b00020; border-top-color: #b00020; position: relative; }
+      .spinner.error::after {
+        content: '!';
+        position: absolute;
+        top: -3px;
+        left: 5px;
+        color: #b00020;
+        font-weight: 700;
+        font-size: 12px;
+      }
+      .spinner.spin { animation: spin 1s linear infinite; }
+
+      .steps { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+      .step { padding: 10px 10px 8px 0; border-bottom: 1px solid #eee; }
+      .step:last-child { border-bottom: none; }
+      .step .label { font-weight: 600; }
+      .step .sub { font-size: 12px; color: #666; margin-top: 2px; margin-left: 26px; }
       .ok { color: #0a7a28; font-weight: 600; }
       .err { color: #b00020; font-weight: 600; }
       button { margin-top: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
       button.primary { border-color: #111; }
       pre { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 10px; border-radius: 10px; }
+      .summary { font-size: 12px; color: #555; margin-top: 6px; }
     </style>
   </head>
   <body>
     <div class="box">
-      <div class="row" id="loadingRow">
-        <div class="spinner"></div>
-        <div>
-          <div><b><?= DATA.title ?></b></div>
-          <div class="muted"><?= DATA.description ?></div>
-        </div>
+      <div id="header">
+        <div class="title" id="titleText"><?= DATA.title ?></div>
+        <div class="muted" id="descText"><?= DATA.description ?></div>
       </div>
+
+      <div id="steps"></div>
 
       <div id="result" style="display:none; margin-top: 12px;"></div>
       <div id="details" style="display:none; margin-top: 10px;"></div>
@@ -38,20 +68,85 @@
     <script>
       const action = "<?= DATA.action ?>";
 
+      function setStatus(text) {
+        document.getElementById('descText').textContent = text || '';
+      }
+
       function renderDone(ok, msg, payload) {
-        document.getElementById('loadingRow').style.display = 'none';
         const result = document.getElementById('result');
         result.style.display = 'block';
-        result.innerHTML = `<div class="${ok ? 'ok' : 'err'}">${ok ? 'Listo' : 'Error'}:</div><div>${escapeHtml(msg || '')}</div>`;
+        const summary = summarizePayload(payload);
+        result.innerHTML =
+          `<div class="${ok ? 'ok' : 'err'}">${ok ? 'Listo' : 'Error'}:</div>` +
+          `<div>${escapeHtml(msg || '')}</div>` +
+          (summary ? `<div class="summary">${escapeHtml(summary)}</div>` : '');
 
-        if (payload) {
-          const details = document.getElementById('details');
-          details.style.display = 'block';
-          details.innerHTML = `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
-        }
+        // Hide details/json dump
+        const details = document.getElementById('details');
+        details.style.display = 'none';
+        details.innerHTML = '';
+
         document.getElementById('closeBtn').style.display = 'inline-block';
         document.getElementById('closeBtn').className = ok ? 'primary' : '';
       }
+
+      function clearSteps() {
+        const wrap = document.getElementById('steps');
+        wrap.innerHTML = '';
+        wrap.className = 'steps';
+      }
+
+      function addStep(step, state) {
+        const wrap = document.getElementById('steps');
+        wrap.className = 'steps';
+        const div = document.createElement('div');
+        div.className = 'step';
+        div.id = `step-${step.id}`;
+        div.setAttribute('data-state', 'pending');
+        div.innerHTML = `
+          <div class="row">
+            <div class="spinner small"></div>
+            <div class="step-texts">
+              <div class="label step-label" data-pending="${step.pending}" data-done="${step.done}">${step.pending}</div>
+              ${step.sub ? `<div class="sub">${step.sub}</div>` : ''}
+            </div>
+          </div>
+        `;
+        wrap.appendChild(div);
+        setStepState(step.id, state || 'pending');
+      }
+
+      function setStepState(id, state) {
+        const el = document.getElementById(`step-${id}`);
+        if (!el) return;
+        el.setAttribute('data-state', state);
+        const label = el.querySelector('.step-label');
+        const pending = label.getAttribute('data-pending');
+        const done = label.getAttribute('data-done');
+        const icon = el.querySelector('.spinner');
+        icon.classList.remove('check', 'error');
+        if (state === 'done') {
+          label.textContent = done || pending || '';
+          icon.classList.remove('spin');
+          icon.classList.add('check');
+        } else if (state === 'pending') {
+          label.textContent = pending || label.textContent;
+          icon.classList.add('spin');
+        } else if (state === 'error') {
+          label.textContent = pending || label.textContent;
+          icon.classList.remove('spin');
+          icon.classList.add('error');
+        }
+      }
+
+      const STEP_DEFS = {
+        upload:   { id: 'upload', pending: 'Preprocesando archivos…', done: 'Archivos listos' },
+        process:  { id: 'process', pending: 'Analizando archivos…', done: 'Información extraída' },
+        write:    { id: 'write', pending: 'Escribiendo resultados…', done: 'Resultados escritos' },
+        cover:    { id: 'cover', pending: 'Creando carátula…', done: 'Carátula creada' },
+        generate: { id: 'generate', pending: 'Generando PDF/Excel…', done: 'PDF/Excel generados' },
+        download: { id: 'download', pending: 'Descargando archivos a Drive…', done: 'Descargados en Drive' },
+      };
 
       function escapeHtml(s) {
         return (s ?? '').toString()
@@ -59,15 +154,166 @@
           .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
       }
 
-      // Ejecuta la etapa al cargar
-      google.script.run
-        .withSuccessHandler((res) => {
-          const ok = !!res?.ok;
-          renderDone(ok, res?.message || '', res?.payload || null);
-        })
-        .withFailureHandler((err) => {
-          renderDone(false, err?.message || String(err), null);
-        })[action]();
+      function summarizePayload(payload) {
+        if (!payload) return '';
+        const parts = [];
+
+        if (payload.count) parts.push(`Comprobantes escritos: ${payload.count}.`);
+        if (payload.items && payload.items.length) parts.push(`Comprobantes detectados: ${payload.items.length}.`);
+        if (payload.rendicionId) parts.push(`Rendición: ${payload.rendicionId}.`);
+        if (payload.mode) parts.push(`Modo de subida: ${payload.mode}.`);
+
+        if (payload.saved) {
+          if (payload.saved.pdf) parts.push('PDF guardado en Drive.');
+          if (payload.saved.xlsm) parts.push('Excel guardado en Drive.');
+        }
+
+        return parts.join(' ');
+      }
+
+      function runSingleAction() {
+        clearSteps();
+        google.script.run
+          .withSuccessHandler((res) => {
+            const ok = !!res?.ok;
+            renderDone(ok, res?.message || '', res?.payload || null);
+          })
+          .withFailureHandler((err) => {
+            renderDone(false, err?.message || String(err), null);
+          })[action]();
+      }
+
+      function runUploadAndProcess() {
+        clearSteps();
+        addStep(STEP_DEFS.upload, 'pending');
+        setStatus('Preprocesando archivos…');
+        google.script.run
+          .withSuccessHandler((uploadRes) => {
+            if (!uploadRes?.ok) {
+              setStepState('upload', 'error');
+              renderDone(false, uploadRes?.message || 'Error al subir archivos.', uploadRes?.payload || null);
+              return;
+            }
+
+            setStepState('upload', 'done');
+            addStep(STEP_DEFS.process, 'pending');
+            setStatus('Analizando archivos…');
+            google.script.run
+              .withSuccessHandler((processRes) => {
+                if (!processRes?.ok) {
+                  setStepState('process', 'error');
+                  renderDone(false, processRes?.message || 'Error al procesar.', processRes?.payload || null);
+                  return;
+                }
+
+                setStepState('process', 'done');
+                addStep(STEP_DEFS.write, 'pending');
+                setStatus('Escribiendo resultados…');
+
+                google.script.run
+                  .withSuccessHandler((writeRes) => {
+                    if (!writeRes?.ok) {
+                      setStepState('write', 'error');
+                      renderDone(false, writeRes?.message || 'Error al escribir resultados.', writeRes?.payload || null);
+                      return;
+                    }
+
+                    setStepState('write', 'done');
+                    renderDone(true, writeRes?.message || 'Archivos procesados.', {
+                      upload: uploadRes?.payload || null,
+                      process: processRes?.payload || null,
+                      write: writeRes?.payload || null
+                    });
+                  })
+                  .withFailureHandler((err) => {
+                    setStepState('write', 'error');
+                    renderDone(false, err?.message || String(err), null);
+                  })
+                  .stage2_write_results(processRes?.items || processRes?.payload?.items || []);
+              })
+              .withFailureHandler((err) => {
+                setStepState('process', 'error');
+                renderDone(false, err?.message || String(err), null);
+              })
+              .stage2_process_analyze();
+          })
+          .withFailureHandler((err) => {
+            renderDone(false, err?.message || String(err), null);
+          })
+          .stage1_upload();
+      }
+
+      function runFinalizeSteps() {
+        clearSteps();
+        addStep(STEP_DEFS.cover, 'pending');
+        setStepState('cover', 'pending');
+        setStatus('Creando carátula…');
+
+        google.script.run
+          .withSuccessHandler((coverRes) => {
+            if (!coverRes?.ok) {
+              setStepState('cover', 'error');
+              renderDone(false, coverRes?.message || 'Error al crear carátula.', coverRes?.payload || null);
+              return;
+            }
+
+            setStepState('cover', 'done');
+            addStep(STEP_DEFS.generate, 'pending');
+            setStatus('Generando PDF/Excel…');
+
+            google.script.run
+              .withSuccessHandler((genRes) => {
+                if (!genRes?.ok) {
+                  setStepState('generate', 'error');
+                  renderDone(false, genRes?.message || 'Error al generar archivos.', genRes?.payload || null);
+                  return;
+                }
+
+                setStepState('generate', 'done');
+                addStep(STEP_DEFS.download, 'pending');
+                setStatus('Descargando archivos a Drive…');
+
+                google.script.run
+                  .withSuccessHandler((dlRes) => {
+                    if (!dlRes?.ok) {
+                      setStepState('download', 'error');
+                      renderDone(false, dlRes?.message || 'Error al descargar archivos.', dlRes?.payload || null);
+                      return;
+                    }
+
+                    setStepState('download', 'done');
+                    renderDone(true, dlRes?.message || 'Entrega generada.', {
+                      cover: coverRes?.payload || null,
+                      generate: genRes?.payload || null,
+                      download: dlRes?.payload || null
+                    });
+                  })
+                  .withFailureHandler((err) => {
+                    setStepState('download', 'error');
+                    renderDone(false, err?.message || String(err), null);
+                  })
+                  .stage3_download_outputs(genRes?.payload?.pdfUri || null, genRes?.payload?.xlsmUri || null);
+              })
+              .withFailureHandler((err) => {
+                setStepState('generate', 'error');
+                renderDone(false, err?.message || String(err), null);
+              })
+              .stage3_generate_outputs(coverRes?.payload?.coverGcsUri || null);
+          })
+          .withFailureHandler((err) => {
+            setStepState('cover', 'error');
+            renderDone(false, err?.message || String(err), null);
+          })
+          .stage3_create_cover();
+      }
+
+      if (action === 'stage_upload_and_process') {
+        runUploadAndProcess();
+      } else if (action === 'stage3_finalize') {
+        runFinalizeSteps();
+      } else {
+        runSingleAction();
+      }
     </script>
   </body>
 </html>

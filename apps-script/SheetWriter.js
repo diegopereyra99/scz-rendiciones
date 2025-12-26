@@ -58,7 +58,8 @@ function writeItemsToSheet(items) {
 
     // Store per-row metadata in DocumentProperties (no debug column)
     setRowMeta_(row, {
-      warning_fields: warningFieldNames
+      warning_fields: warningFieldNames,
+      warning_details: warnings
     });
 
     // Checkbox tick cell (summary/action lives here)

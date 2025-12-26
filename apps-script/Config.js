@@ -73,11 +73,16 @@ const RENDICION_MONTH = 12;         // 1-12 (cargado en config del usuario)
 const SS_ID = SpreadsheetApp.getActive().getId();
 
 // Drive: carpeta donde van los outputs (PDF + XLSM)
-const OUTPUT_FOLDER_ID = DriveApp.getFolderById(FOLDER_ID).getParents().next().getId(); // o poné otra carpeta si querés separar
+let OUTPUT_FOLDER_ID = null; // Se resuelve lazy para no romper en triggers simples (onEdit)
 
 // Cloud Run: dónde escribir en GCS
 const GCS_PREFIX = `gs://${GCS_BUCKET}/rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}`;
 
 const DRIVE_API_ENABLED = true;   // <-- toggle
 
+function getOutputFolderId_() {
+  if (OUTPUT_FOLDER_ID) return OUTPUT_FOLDER_ID;
+  OUTPUT_FOLDER_ID = DriveApp.getFolderById(FOLDER_ID).getParents().next().getId();
+  return OUTPUT_FOLDER_ID;
+}
 

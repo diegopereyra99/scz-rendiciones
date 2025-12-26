@@ -1,29 +1,19 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Automatización')
-    .addItem('1) Subir archivos (para la IA)', 'ui_stage1_upload')
-    .addItem('2) Procesar (IA → completar planilla)', 'ui_stage2_process')
-    .addItem('3) Generar Excel + PDF', 'ui_stage3_finalize')
-    .addSeparator()
-    // .addItem('Process test folder', 'showProcessingDialog') // tu item viejo si querés
+    .addItem('1) Procesar archivos (IA → planilla)', 'ui_process_all')
+    .addItem('2) Generar Excel + PDF', 'ui_stage3_finalize')
+    .addItem('Reiniciar todo', 'clearAllRows')
     .addToUi();
 }
 
 /** ---------- UI wrappers (abren HTML) ---------- */
 
-function ui_stage1_upload() {
+function ui_process_all() {
   return showModal_('stage_wait', {
-    title: 'Subiendo archivos…',
-    action: 'stage1_upload',
-    description: 'Subiendo y normalizando adjuntos para que la IA los procese.'
-  });
-}
-
-function ui_stage2_process() {
-  return showModal_('stage_wait', {
-    title: 'Procesando con IA…',
-    action: 'stage2_process',
-    description: 'Extracción + warnings + volcado a la planilla.'
+    title: 'Procesando archivos…',
+    action: 'stage_upload_and_process',
+    description: 'Preprocesando, analizando con IA y escribiendo la planilla.'
   });
 }
 
@@ -47,6 +37,31 @@ function showModal_(htmlFile, data) {
 /** ---------- Backend handlers (llamados desde HTML) ---------- */
 
 function stage1_upload() {
+  return runStage1Upload_();
+}
+
+function stage_upload_and_process() {
+  const uploadRes = runStage1Upload_();
+  if (!uploadRes?.ok) return uploadRes;
+
+  const analyzeRes = stage2_process_analyze();
+  if (!analyzeRes?.ok) return analyzeRes;
+
+  const writeRes = stage2_write_results(analyzeRes.items || analyzeRes.payload?.items || []);
+  if (!writeRes?.ok) return writeRes;
+
+  return {
+    ok: true,
+    message: writeRes.message || 'Archivos procesados y planilla actualizada.',
+    payload: {
+      upload: uploadRes.payload || null,
+      process: analyzeRes.payload || null,
+      write: writeRes.payload || null
+    }
+  };
+}
+
+function runStage1Upload_() {
   const rendicionId = buildRendicionId_();
   const driveFiles = listDriveFiles_(FOLDER_ID);
   if (!driveFiles.length) return { ok: false, message: 'No hay archivos en la carpeta.' };
@@ -128,20 +143,34 @@ function stage1_upload() {
 
 
 function stage2_process() {
+  const analyzeRes = stage2_process_analyze();
+  if (!analyzeRes?.ok) return analyzeRes;
+  return stage2_write_results(analyzeRes.items || analyzeRes.payload?.items || []);
+}
+
+function stage2_process_analyze() {
   const st = jobStateGet_();
   if (!st?.rendicionId || !st?.normalizedItems?.length) {
     return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems guardados).' };
   }
 
-  // Si tu callGemini esperaba "uploadedFiles" con signedUrl / driveId,
-  // acá adaptás. Por ahora le pasamos los GCS URIs + mime.
   const uploadedFiles = st.normalizedItems;
-
-  // REUSO de tu pipeline existente:
   const items = callGemini(uploadedFiles);   // GeminiClient.gs (tu implementación)
-  writeItemsToSheet(items);                  // SheetWriter.gs (tu implementación)
 
-  return { ok: true, message: `Planilla actualizada: ${items?.length || 0} comprobantes encontrados.` };
+  return {
+    ok: true,
+    message: `Comprobantes detectados: ${items?.length || 0}.`,
+    items,
+    payload: { items }
+  };
+}
+
+function stage2_write_results(items) {
+  if (!items || !items.length) {
+    return { ok: false, message: 'No hay comprobantes para escribir.' };
+  }
+  writeItemsToSheet(items);                  // SheetWriter.gs (tu implementación)
+  return { ok: true, message: `Planilla actualizada: ${items?.length || 0} comprobantes escritos.`, payload: { count: items.length } };
 }
 
 
@@ -151,16 +180,45 @@ function stage3_finalize() {
     return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems).' };
   }
 
+  const coverRes = stage3_create_cover();
+  if (!coverRes?.ok) return coverRes;
+
+  const genRes = stage3_generate_outputs(coverRes.payload?.coverGcsUri || null);
+  if (!genRes?.ok) return genRes;
+
+  const dlRes = stage3_download_outputs(genRes.payload?.pdfUri || null, genRes.payload?.xlsmUri || null);
+  if (!dlRes?.ok) return dlRes;
+
+  return { ok: true, message: 'Completado: PDF + Excel generados (Ver Drive).', payload: dlRes.payload || {} };
+}
+
+function stage3_create_cover() {
+  const st = jobStateGet_();
+  if (!st?.rendicionId || !st?.normalizedItems?.length) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems).' };
+  }
+
+  // Bloqueante: no seguimos si faltan ticks
+  assertAllChecksOk_();
+
+  const pdfBlob = buildCoverPdf_(SS_ID, getSheetGidByName_('Caratula'), 'cover.pdf');
+  const coverGcsUri = uploadBlobToGCS_(GCS_BUCKET, `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${RENDICION_MONTH}/cover.pdf`, pdfBlob);
+
+  return { ok: true, message: 'Carátula creada.', payload: { coverGcsUri } };
+}
+
+function stage3_generate_outputs(coverGcsUri) {
+  const st = jobStateGet_();
+  if (!st?.rendicionId || !st?.normalizedItems?.length) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay items).' };
+  }
+
   // 1) checks
   assertAllChecksOk_();
 
   // 2) celdas a mandar (solo FIELD_COLUMN_MAP)
   const xlsmValues = buildXlsmValuesFromSheet_();
   if (!xlsmValues.length) throw new Error('No hay valores para mandar al XLSM.');
-
-  // 3) cover: por ahora lo dejo opcional (si ya lo generás en tu Cloud Run, genial)
-  const pdfBlob = buildCoverPdf_(SS_ID, getSheetGidByName_('Formulario'), 'cover.pdf');
-  const coverGcsUri = uploadBlobToGCS_(GCS_BUCKET, `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${RENDICION_MONTH}/cover.pdf`, pdfBlob);
 
   const req = {
     rendicionId: st.rendicionId,
@@ -181,30 +239,38 @@ function stage3_finalize() {
     }
   };
 
-  // limpia undefined para no romper payloads estrictos
   const cleanReq = JSON.parse(JSON.stringify(req));
-
   const res = callCloudRunJson_('/v1/finalize', cleanReq);
   if (!res?.ok) throw new Error(`Finalize ok=false: ${JSON.stringify(res)}`);
 
-  // Descargar el pdf y xlsm a OUTPUT_FOLDER_ID
-  if (res.pdf?.gcsUri) {
-    saveGcsFileToDrive_(
-      res.pdf.gcsUri,
-      `RENDREQ-XXXX_${st.rendicionId}.pdf`,
-      OUTPUT_FOLDER_ID
-    );
+  const pdfUri = res.pdf?.gcsUri || null;
+  const xlsmUri = res.xlsm?.gcsUri || null;
+
+  return {
+    ok: true,
+    message: 'PDF/Excel generados en GCS.',
+    payload: { pdfUri, xlsmUri }
+  };
+}
+
+function stage3_download_outputs(pdfUri, xlsmUri) {
+  const st = jobStateGet_();
+  if (!st?.rendicionId) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay rendicionId).' };
   }
 
-  if (res.xlsm?.gcsUri) {
-    saveGcsFileToDrive_(
-      res.xlsm.gcsUri,
-      `RENDREQ-XXXX_${st.rendicionId}.xlsm`,
-      OUTPUT_FOLDER_ID
-    );
+  const saved = {};
+
+  if (pdfUri) {
+    saveGcsFileToDrive_(pdfUri, `RENDREQ-XXXX_${st.rendicionId}.pdf`, getOutputFolderId_());
+    saved.pdf = true;
+  }
+  if (xlsmUri) {
+    saveGcsFileToDrive_(xlsmUri, `RENDREQ-XXXX_${st.rendicionId}.xlsm`, getOutputFolderId_());
+    saved.xlsm = true;
   }
 
-  return { ok: true, message: 'Completado: PDF + Excel generados (Ver Drive).'};
+  return { ok: true, message: 'Archivos descargados a Drive.', payload: { saved, pdfUri, xlsmUri } };
 }
 
 
@@ -245,4 +311,3 @@ function stage3_finalize() {
 
 //   Logger.log(resp.getContentText());
 // }
-
