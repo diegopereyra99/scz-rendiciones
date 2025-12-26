@@ -1,0 +1,7 @@
+data/
+output/
+
+*.pyc
+__pycache__/
+
+*.xlsx
