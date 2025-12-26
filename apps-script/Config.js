@@ -1,0 +1,83 @@
+/**************
+ * CONFIG
+ **************/
+
+const SHEET_NAME = 'Formulario';
+const START_ROW = 14;
+const STOP_ROW = 38;
+const FOLDER_ID = '1W394UArn1rH7Y0WI5HhC-6EU0wSWPSPt';
+const GCS_BUCKET = 'scz-uy-rendiciones';
+
+const GEMINI_MODEL = 'gemini-2.5-flash';
+// https://us-central1-aiplatform.googleapis.com/v1/projects/diesel-thunder-465918-r4/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent
+
+const GEMINI_ENDPOINT =
+  'https://us-central1-aiplatform.googleapis.com/v1/projects/diesel-thunder-465918-r4/locations/us-central1/publishers/google/models/' +
+  GEMINI_MODEL +
+  ':generateContent';
+
+const PROMPT_DOC_ID = '1kP0ZIsnkHwSFppuCc-Gl9-Hk39zaNWeaT--tf67AQ8w';
+const SYSTEM_DOC_ID = '1_FzB_GNV-Fm_aEfGE0TORtTtrI9AkB0wA8ZXPMFM6b4';
+const SCHEMA_FILE_ID = '1uB89nGWI6TQ0Pq2ylipBSodDu2qm9wcR';
+
+// ✅ checkbox column (you changed this)
+const WARNINGS_OK_COL_LETTER = 'C';
+
+const FIELD_COLUMN_MAP = {
+  'Fecha de factura': 'E',
+  'Numero de Factura': 'G',
+  'OC': 'H',
+  'Contiene RUT comprador': 'I',
+  'Factura exterior': 'J',
+  'Proveedor': 'K',
+  'Tipo de gasto': 'L',
+  'Imputación gasto': 'N',
+  'Importe total': 'P',
+  'Moneda': 'Q',
+  'Base 22': 'S',
+  // 'Iva 22': 'T',
+  'Base 10': 'U',
+  // 'Iva 10': 'V',
+  'Exento': 'W',
+  'Descuentos': 'X',
+  'Propina': 'Y',
+  'Direccion factura': 'Z',
+  'Descripcion': 'AA'
+};
+
+const MANUAL_FIELDS = [
+  'OC',
+  'Imputación gasto'
+];
+
+const COLOR_WARNING = '#fff2cc';
+const COLOR_MANUAL  = '#d9ead3';
+
+const MAX_RESOLUTION = 2000;
+
+const PROP_LAST_ITEM_COUNT = 'LAST_ITEM_COUNT';
+
+// Row meta keys will be: ROW_META_<rowNumber>
+const PROP_ROW_META_PREFIX = 'ROW_META_';
+
+// You changed this; keep as-is
+const GRAY_COLUMNS = ['L', 'N', 'Q'];
+
+const SERVICE_URL = 'https://rendiciones-service-213593806678.us-central1.run.app';
+
+// Identidad de la rendición (por usuario/mes/año)
+const RENDICION_USER = 'diego';     // <- cada usuario lo cambia
+const RENDICION_YEAR = 2025;        // <- o new Date().getFullYear()
+const RENDICION_MONTH = 12;         // 1-12 (cargado en config del usuario)
+
+const SS_ID = SpreadsheetApp.getActive().getId();
+
+// Drive: carpeta donde van los outputs (PDF + XLSM)
+const OUTPUT_FOLDER_ID = DriveApp.getFolderById(FOLDER_ID).getParents().next().getId(); // o poné otra carpeta si querés separar
+
+// Cloud Run: dónde escribir en GCS
+const GCS_PREFIX = `gs://${GCS_BUCKET}/rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}`;
+
+const DRIVE_API_ENABLED = true;   // <-- toggle
+
+

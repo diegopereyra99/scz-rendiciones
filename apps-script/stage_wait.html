@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: Arial, sans-serif; padding: 16px; }
+      .muted { color: #666; font-size: 13px; margin-top: 6px; }
+      .box { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
+      .row { display: flex; gap: 12px; align-items: center; }
+      .spinner {
+        width: 18px; height: 18px; border: 3px solid #ddd; border-top-color: #111;
+        border-radius: 50%; animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .ok { color: #0a7a28; font-weight: 600; }
+      .err { color: #b00020; font-weight: 600; }
+      button { margin-top: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+      button.primary { border-color: #111; }
+      pre { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 10px; border-radius: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <div class="row" id="loadingRow">
+        <div class="spinner"></div>
+        <div>
+          <div><b><?= DATA.title ?></b></div>
+          <div class="muted"><?= DATA.description ?></div>
+        </div>
+      </div>
+
+      <div id="result" style="display:none; margin-top: 12px;"></div>
+      <div id="details" style="display:none; margin-top: 10px;"></div>
+
+      <button id="closeBtn" style="display:none;" onclick="google.script.host.close()">Cerrar</button>
+    </div>
+
+    <script>
+      const action = "<?= DATA.action ?>";
+
+      function renderDone(ok, msg, payload) {
+        document.getElementById('loadingRow').style.display = 'none';
+        const result = document.getElementById('result');
+        result.style.display = 'block';
+        result.innerHTML = `<div class="${ok ? 'ok' : 'err'}">${ok ? 'Listo' : 'Error'}:</div><div>${escapeHtml(msg || '')}</div>`;
+
+        if (payload) {
+          const details = document.getElementById('details');
+          details.style.display = 'block';
+          details.innerHTML = `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+        }
+        document.getElementById('closeBtn').style.display = 'inline-block';
+        document.getElementById('closeBtn').className = ok ? 'primary' : '';
+      }
+
+      function escapeHtml(s) {
+        return (s ?? '').toString()
+          .replaceAll('&','&amp;').replaceAll('<','&lt;')
+          .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
+      }
+
+      // Ejecuta la etapa al cargar
+      google.script.run
+        .withSuccessHandler((res) => {
+          const ok = !!res?.ok;
+          renderDone(ok, res?.message || '', res?.payload || null);
+        })
+        .withFailureHandler((err) => {
+          renderDone(false, err?.message || String(err), null);
+        })[action]();
+    </script>
+  </body>
+</html>
