@@ -1,5 +1,0 @@
-Analizá los archivos enumerados (ARCHIVO fNNNN).
-Devolvé un JSON con:
-- comprobantes (lista según el esquema),
-- “estado de cuenta” si hay uno,
-- “orden archivos” con los códigos fNNNN en el orden final.

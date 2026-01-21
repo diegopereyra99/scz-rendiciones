@@ -5,7 +5,7 @@ function callCloudRunJson_(path, payload) {
   const resp = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
-    // headers: { Authorization: 'Bearer ' + token },
+    headers: { Authorization: 'Bearer ' + getServiceAccountIdToken_() },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   });
@@ -14,6 +14,40 @@ function callCloudRunJson_(path, payload) {
   const text = resp.getContentText() || '';
   if (code < 200 || code >= 300) throw new Error(`Cloud Run ${path} failed (${code}): ${text}`);
   return text ? JSON.parse(text) : null;
+}
+
+
+function getServiceAccountIdToken_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('REN_ID_TOKEN');
+  if (cached) return cached;
+
+  const raw = PropertiesService.getScriptProperties().getProperty('SERVICE_ACCOUNT_KEY');
+  if (!raw) throw new Error('Missing Script Property: SERVICE_ACCOUNT_KEY');
+
+  const sa = JSON.parse(raw);
+  const accessToken = getServiceAccountAccessToken();
+
+  const audience = SERVICE_URL.replace(/\/+$/, '');
+  const url = `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(sa.client_email)}:generateIdToken`;
+
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + accessToken },
+    payload: JSON.stringify({ audience: audience, includeEmail: true }),
+    muteHttpExceptions: true
+  });
+
+  const code = resp.getResponseCode();
+  const text = resp.getContentText() || '';
+  if (code < 200 || code >= 300) throw new Error(`generateIdToken failed (${code}): ${text}`);
+
+  const data = JSON.parse(text);
+  if (!data.token) throw new Error('generateIdToken response missing token');
+
+  cache.put('REN_ID_TOKEN', data.token, 3000); // ~50 min
+  return data.token;
 }
 
 
@@ -133,5 +167,3 @@ function buildCoverPdf_(spreadsheetId, sheetId, pdfFileName) {
   const pdfBlob = resp.getBlob().setName(pdfFileName);
   return pdfBlob; // <- Blob PDF listo (para Drive o GCS)
 }
-
-

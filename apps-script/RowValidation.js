@@ -95,11 +95,18 @@ function normalizeWarnings_(warnings) {
  */
 function applyWarnings_(sheet, rowIndex, warnings) {
   const highlighted = [];
+  let hasGeneral = false;
 
   warnings.forEach((w) => {
     const fieldName = w.fieldName;
     const message = w.message || 'Revisar este valor.';
 
+    if (fieldName === 'general' || fieldName === null) {
+      applyGeneralWarningRow_(sheet, rowIndex, message);
+      highlighted.push('general');
+      hasGeneral = true;
+      return;
+    }
     if (fieldName && FIELD_COLUMN_MAP[fieldName]) {
       const colIndex = colLetterToIndex(FIELD_COLUMN_MAP[fieldName]);
       const cell = sheet.getRange(rowIndex, colIndex);
@@ -113,7 +120,26 @@ function applyWarnings_(sheet, rowIndex, warnings) {
     }
   });
 
+  if (hasGeneral) {
+    const okCell = sheet.getRange(rowIndex, colLetterToIndex(WARNINGS_OK_COL_LETTER));
+    const prev = okCell.getNote();
+    okCell.setNote((prev ? prev + '\n' : '') + buildWarningNote_('Advertencia general en la fila.'));
+  }
+
   return highlighted;
+}
+
+function applyGeneralWarningRow_(sheet, rowIndex, message) {
+  const cols = getWriteColumnIndexes_();
+  cols.forEach((colIndex) => {
+    const cell = sheet.getRange(rowIndex, colIndex);
+    cell.setFontLine('underline');
+  });
+  if (message) {
+    const cell = sheet.getRange(rowIndex, colLetterToIndex(WARNINGS_OK_COL_LETTER));
+    const prevNote = cell.getNote();
+    cell.setNote((prevNote ? prevNote + '\n' : '') + buildWarningNote_(message));
+  }
 }
 
 /**
@@ -250,6 +276,10 @@ function reapplyRowHighlights_(sheet, rowIndex) {
   // Reapply warnings
   warningDetails.forEach((w) => {
     const fieldName = w.fieldName;
+    if (fieldName === 'general' || fieldName === null) {
+      applyGeneralWarningRow_(sheet, rowIndex, w.message);
+      return;
+    }
     if (!fieldName || !FIELD_COLUMN_MAP[fieldName]) return;
     const colIndex = colLetterToIndex(FIELD_COLUMN_MAP[fieldName]);
     const cell = sheet.getRange(rowIndex, colIndex);
@@ -317,6 +347,7 @@ function clearRowFormatting_(sheet, rowIndex) {
   const cols = getWriteColumnIndexes_();
   cols.forEach((col) => {
     restoreBackgroundFromTemplateOrGray_(sheet, rowIndex, col);
+    sheet.getRange(rowIndex, col).setFontLine('none');
   });
 }
 
@@ -368,7 +399,7 @@ function isEmptyValue_(v) {
 }
 
 function getLastDataRow_(sh) {
-  const anchorLetter = FIELD_COLUMN_MAP['Importe total'] || 'G';
+  const anchorLetter = FIELD_COLUMN_MAP['Importe a rendir'] || 'G';
   const col = colLetterToIndex(anchorLetter);
   const last = STOP_ROW
   if (last < START_ROW) return START_ROW - 1;

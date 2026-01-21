@@ -15,12 +15,15 @@ cd service
 python -m venv .venv
 ./.venv/Scripts/Activate.ps1  # or source .venv/bin/activate on macOS/Linux
 pip install -r requirements.txt
+export $(grep -v '^#' ../.env.example | xargs)  # or copy .env.example -> .env
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8080
 ```
 Endpoints:
 - `GET /healthz`
 - `POST /v1/normalize`
 - `POST /v1/finalize`
+- `POST /v1/process_statement`
+- `POST /v1/process_receipts_batch`
 
 ## Build and deploy (Cloud Run)
 ```bash
@@ -104,8 +107,8 @@ Example request:
     ],
     "xlsmTemplate": { "gcsUri": "gs://bucket/templates/rendiciones_macro_template.xlsm" },
     "xlsmValues": [
-      { "sheet": "Formulario E14", "row": 14, "col": 2, "value": "2025-12-18" },
-      { "sheet": "Formulario E14", "row": 14, "col": 7, "value": "A-1" }
+      { "sheet": "Formulario", "row": 14, "col": 2, "value": "2025-12-18" },
+      { "sheet": "Formulario", "row": 14, "col": 7, "value": "A-1" }
     ]
   },
   "output": { "gcsPrefix": "gs://bucket/rendiciones/2025/usr_x/01/" },
@@ -122,6 +125,63 @@ Example response:
   "warnings": [
     { "code": "SIGNED_URL_FAILED", "message": "Failed to generate signed URL for PDF" }
   ],
+  "error": null
+}
+```
+
+## Stage 2 endpoints (inputs/outputs)
+
+### `POST /v1/process_statement`
+Procesa el estado de cuenta con DocFlow (perfil `estado/v0` por defecto).
+Si el input es PDF multipágina, se rasteriza (una imagen por página) y se envía a DocFlow en modo `aggregate`.
+
+Request (GCS/Drive/signed URL):
+```json
+{
+  "rendicionId": "abc123",
+  "statement": { "gcsUri": "gs://bucket/.../normalized/0001_hash.pdf", "mime": "application/pdf" },
+  "options": { "profile": "estado/v0", "model": "gemini-2.5-flash" }
+}
+```
+
+Response:
+```json
+{
+  "ok": true,
+  "rendicionId": "abc123",
+  "data": { "fecha_emision": "...", "transacciones": [ ... ] },
+  "meta": { "model": "...", "docs": ["gs://..."], "profile": "estado/v0", "mode": "per_file" },
+  "warnings": null,
+  "error": null
+}
+```
+
+### `POST /v1/process_receipts_batch`
+Procesa un batch de comprobantes con DocFlow (perfil `lineas_gastos/v0` por defecto).
+
+Request (GCS/Drive/signed URL):
+```json
+{
+  "rendicionId": "abc123",
+  "mode": "tarjeta",
+  "statement": { "parsed": { "transacciones": [ ... ] } },
+  "receipts": [ { "driveFileId": "fileId123", "mime": "image/jpeg" } ],
+  "options": { "profile": "lineas_gastos/v0", "model": "gemini-2.5-flash" }
+}
+```
+
+Response:
+```json
+{
+  "ok": true,
+  "rendicionId": "abc123",
+  "rows": [
+    {
+      "data": [ { "Fecha de factura": "...", "Warnings": [], "Estado de cuenta": { "idx": 12, "match": true } } ],
+      "meta": { "model": "...", "docs": ["gs://..."], "profile": "lineas_gastos/v0", "mode": "per_file" }
+    }
+  ],
+  "warnings": null,
   "error": null
 }
 ```

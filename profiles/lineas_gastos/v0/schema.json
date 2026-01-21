@@ -1,0 +1,141 @@
+{
+  "type": "ARRAY",
+  "description": "Lista de gastos con comprobantes.",
+  "items": {
+    "type": "OBJECT",
+    "properties": {
+      "Fecha de factura": {
+        "type": "STRING",
+        "format": "date",
+        "nullable": true
+      },
+      "Numero de Factura": {
+        "type": "STRING",
+        "description": "Número o identificador único de la factura. En Uruguay debe incluir una serie y un número.",
+        "nullable": true
+      },
+      "Factura exterior": {
+        "type": "BOOLEAN",
+        "description": "True si la factura corresponde a un gasto en el exterior (fuera de Uruguay).",
+        "nullable": true
+      },
+      "Contiene RUT comprador": {
+        "type": "BOOLEAN",
+        "description": "Indica si en el comprobante se incluye el numero 214843360014, que corresponde al RUT de Scienza/Murry.",
+        "nullable": true
+      },
+      "Proveedor": {
+        "type": "STRING",
+        "description": "Nombre comercial (preferido) o razón social del emisor de la factura.",
+        "nullable": true
+      },
+      "Pais emision": {
+        "type": "STRING",
+        "description": "País donde fue emitida la factura, si se puede inferir.",
+        "nullable": true
+      },
+      "Importe facturado": {
+        "type": "NUMBER",
+        "description": "Monto total de la factura en la moneda original.",
+        "nullable": true
+      },
+      "Moneda": {
+        "type": "STRING",
+        "description": "Código ISO de moneda (por ejemplo: UYU, USD, EUR).",
+        "nullable": true
+      },
+      "Base 22": {
+        "type": "NUMBER",
+        "description": "Base imponible gravada con IVA 22%.",
+        "nullable": true
+      },
+      "Base 10": {
+        "type": "NUMBER",
+        "description": "Base imponible gravada con IVA 10%.",
+        "nullable": true
+      },
+      "Exento": {
+        "type": "NUMBER",
+        "description": "Base de importe exento de IVA (tasa 0%).",
+        "nullable": true
+      },
+      "Descuentos": {
+        "type": "NUMBER",
+        "description": "Monto total de descuentos explícitos en el comprobante."
+      },
+      "Propina": {
+        "type": "NUMBER",
+        "description": "Monto de propina explícito, si corresponde."
+      },
+      "Importe a rendir": {
+        "type": "NUMBER",
+        "description": "Monto total a rendir, después de descuentos y propinas. Lo que efectivamente se gastó.",
+        "nullable": true
+      },
+      "Tipo de gasto": {
+        "type": "STRING",
+        "enum": [
+            "Telefonía Celular",
+            "Combustible",
+            "Patentes",
+            "Seguro vehicular",
+            "Gastos de traslados",
+            "Beneficios al personal",
+            "Gastos de Representación",
+            "Consumos personales",
+            "Insumos computación",
+            "Pasajes",
+            "Alojamiento",
+            "Capacitación",
+            "Correo y mensajeria",
+            "Imprenta y Papelería",
+            "Registros y renovaciones",
+            "Otros"
+        ],
+        "description": "Clasifique el gasto en una de las categorías predefinidas."
+      },
+      "Estado de cuenta": {
+        "type": "OBJECT",
+        "description": "Info del movimiento de estado de cuenta asociado al gasto, si aplica.",
+        "nullable": true,
+        "properties": {
+          "idx": {
+            "type": "NUMBER",
+            "description": "Indice (1-based) de la linea en el estado de cuenta.",
+            "nullable": true
+          },
+          "match": {
+            "type": "BOOLEAN",
+            "description": "Indica si se encontró una coincidencia única y confiable entre el gasto y una línea del estado de cuenta."
+          },
+          "observacion": {
+            "type": "STRING",
+            "description": "Observaciones adicionales sobre el estado de cuenta y su relación con el gasto.",
+            "nullable": true
+          }
+        }
+      },
+      "Warnings": {
+        "type": "ARRAY",
+        "description": "Lista de advertencias o problemas detectados durante la extracción de datos del comprobante.",
+        "items": {
+          "type": "OBJECT",
+          "properties": {
+            "campo": {
+              "type": "STRING",
+              "description": "Nombre del campo del esquema asociado al problema. Usar 'general' únicamente para advertencias que afecten a todo el comprobante.",
+              "enum": [
+                "general", "Numero de Factura", "Fecha de factura", "Importe facturado", "Importe a rendir", "Moneda", "Proveedor",
+                "Tipo de gasto", "Base 22", "Base 10", "Exento", "Descuentos", "Propina", "Factura exterior", "Contiene RUT comprador"
+              ]
+            },
+            "mensaje": {
+              "type": "STRING",
+              "description": "Mensaje de advertencia o explicación del problema."
+            }
+          }
+        }
+      }
+    }
+  }
+}

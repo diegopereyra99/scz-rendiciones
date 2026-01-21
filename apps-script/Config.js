@@ -4,8 +4,7 @@
 
 const SHEET_NAME = 'Formulario';
 const START_ROW = 14;
-const STOP_ROW = 38;
-const FOLDER_ID = '1W394UArn1rH7Y0WI5HhC-6EU0wSWPSPt';
+const STOP_ROW = 49;
 const GCS_BUCKET = 'scz-uy-rendiciones';
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -32,7 +31,7 @@ const FIELD_COLUMN_MAP = {
   'Proveedor': 'K',
   'Tipo de gasto': 'L',
   'Imputación gasto': 'N',
-  'Importe total': 'P',
+  'Importe a rendir': 'P',
   'Moneda': 'Q',
   'Base 22': 'S',
   // 'Iva 22': 'T',
@@ -41,7 +40,6 @@ const FIELD_COLUMN_MAP = {
   'Exento': 'W',
   'Descuentos': 'X',
   'Propina': 'Y',
-  'Direccion factura': 'Z',
   'Descripcion': 'AA'
 };
 
@@ -52,8 +50,10 @@ const MANUAL_FIELDS = [
 
 const COLOR_WARNING = '#fff2cc';
 const COLOR_MANUAL  = '#d9ead3';
+const COLOR_ORPHAN  = '#f4cccc';
 
 const MAX_RESOLUTION = 2000;
+const PROCESS_BATCH_SIZE = 8;
 
 const PROP_LAST_ITEM_COUNT = 'LAST_ITEM_COUNT';
 
@@ -82,7 +82,10 @@ const DRIVE_API_ENABLED = true;   // <-- toggle
 
 function getOutputFolderId_() {
   if (OUTPUT_FOLDER_ID) return OUTPUT_FOLDER_ID;
-  OUTPUT_FOLDER_ID = DriveApp.getFolderById(FOLDER_ID).getParents().next().getId();
+  OUTPUT_FOLDER_ID = getBaseFolder_().getId();
   return OUTPUT_FOLDER_ID;
 }
 
+const FOLDER_EFECTIVO_NAME = 'Comprobantes efectivo';
+const FOLDER_TARJETA_NAME = 'Comprobantes tarjeta corporativa';
+const FOLDER_ESTADO_NAME = 'Estado de cuenta';

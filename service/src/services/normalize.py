@@ -13,6 +13,7 @@ from googleapiclient.discovery import build  # type: ignore
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pypdf import PdfReader
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import gcs
 from ..config import Settings
@@ -90,6 +91,119 @@ def _get_drive_file_name(file_id: str) -> str:
     return meta.get("name", file_id)
 
 
+def _download_drive_entry(file_id: str, name: str | None) -> Tuple[str, bytes, SourceInfo]:
+    if not name:
+        name = _get_drive_file_name(file_id)
+    data = _download_drive_file(file_id)
+    return name, data, SourceInfo(driveFileId=file_id, originalName=name)
+
+
+def _normalize_entry(
+    idx: int,
+    name: str,
+    data: bytes,
+    source: SourceInfo,
+    *,
+    jpg_quality: int,
+    max_side: int,
+    pdf_mode: str,
+    upload_originals: bool,
+    gcs_prefix: str,
+) -> Tuple[int, NormalizeItem | None, List[Warning]]:
+    warnings: List[Warning] = []
+    ext = name.split(".")[-1].lower() if "." in name else ""
+    normalized_bytes: bytes | None = None
+    mime = ""
+    page_count = None
+    target_ext = ""
+    original_uri = None
+
+    try:
+        if ext in SUPPORTED_IMAGE_EXTS:
+            img = Image.open(io.BytesIO(data))
+            img = apply_exif_orientation(img)
+            img = resize_image_max_side(img, max_side)
+            img = ensure_rgb(img)
+            normalized_bytes = image_to_jpeg_bytes(img, jpg_quality)
+            mime = "image/jpeg"
+            target_ext = "jpg"
+        elif ext in {"pdf"}:
+            if pdf_mode == "rasterize":
+                warnings.append(
+                    Warning(
+                        code="PDF_RASTERIZE_NOT_IMPLEMENTED",
+                        message="pdfMode=rasterize not implemented; keeping PDF as-is.",
+                        details={"file": name},
+                    )
+                )
+            normalized_bytes = data
+            mime = "application/pdf"
+            target_ext = "pdf"
+            try:
+                reader = PdfReader(io.BytesIO(data))
+                page_count = len(reader.pages)
+            except Exception:
+                page_count = None
+        else:
+            warnings.append(
+                Warning(
+                    code="UNSUPPORTED_FILE_TYPE",
+                    message=f"Skipping unsupported file: {name}",
+                    details={"extension": ext, "filename": name},
+                )
+            )
+            return idx, None, warnings
+
+        sha = sha256_bytes(normalized_bytes)
+        object_path = f"{gcs_prefix}normalized/{idx:04d}_{sha}.{target_ext}"
+        gcs_uri = gcs.upload_bytes(normalized_bytes, object_path)
+
+        if upload_originals:
+            try:
+                original_path = f"{gcs_prefix}originals/{idx:04d}_{name}"
+                original_uri = gcs.upload_bytes(data, original_path)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(
+                    Warning(
+                        code="ORIGINAL_UPLOAD_FAILED",
+                        message=f"Failed to upload original for {name}",
+                        details={
+                            "filename": name,
+                            "targetPath": original_path,
+                            **_exception_details(exc),
+                        },
+                    )
+                )
+
+        item = NormalizeItem(
+            source=source,
+            normalized=NormalizedArtifact(
+                gcsUri=gcs_uri,
+                mime=mime,
+                sha256=sha,
+                bytes=len(normalized_bytes),
+                pageCount=page_count,
+                originalGcsUri=original_uri,
+                originalMime=MIME_TYPE_MAP.get(ext, ""),
+            ),
+        )
+        return idx, item, warnings
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(
+            Warning(
+                code="NORMALIZATION_FAILED",
+                message=f"Failed to process {name}",
+                details={
+                    "filename": name,
+                    "source": source.model_dump(exclude_none=True),
+                    "extension": ext,
+                    **_exception_details(exc),
+                },
+            )
+        )
+        return idx, None, warnings
+
+
 async def run_normalize(request: NormalizeRequest, settings: Settings) -> NormalizeResponse:
     jpg_quality = request.options.jpgQuality if request.options else settings.default_jpg_quality
     max_side = request.options.maxSidePx if request.options else settings.default_max_side_px
@@ -116,24 +230,29 @@ async def run_normalize(request: NormalizeRequest, settings: Settings) -> Normal
                         details={},
                     ),
                 )
-            for fid in request.input.driveFileIds:
-                name: str | None = None
-                try:
-                    name = _get_drive_file_name(fid)
-                    data = _download_drive_file(fid)
-                    raw_entries.append((name, data, SourceInfo(driveFileId=fid, originalName=name)))
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(
-                        Warning(
-                            code="DRIVE_DOWNLOAD_FAILED",
-                            message=f"Failed to download {fid}",
-                            details={
-                                "fileId": fid,
-                                **({"fileName": name} if name else {}),
-                                **_exception_details(exc),
-                            },
-                        )
-                    )
+            file_ids = request.input.driveFileIds
+            if file_ids:
+                workers = min(len(file_ids), settings.normalize_workers)
+                entries: List[Tuple[str, bytes, SourceInfo] | None] = [None] * len(file_ids)
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(_download_drive_entry, fid, None): idx
+                        for idx, fid in enumerate(file_ids)
+                    }
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        fid = file_ids[idx]
+                        try:
+                            entries[idx] = fut.result()
+                        except Exception as exc:  # noqa: BLE001
+                            warnings.append(
+                                Warning(
+                                    code="DRIVE_DOWNLOAD_FAILED",
+                                    message=f"Failed to download {fid}",
+                                    details={"fileId": fid, **_exception_details(exc)},
+                                )
+                            )
+                raw_entries.extend([entry for entry in entries if entry])
         elif request.input.files:
             for file in request.input.files:
                 try:
@@ -218,19 +337,28 @@ async def run_normalize(request: NormalizeRequest, settings: Settings) -> Normal
                         details={"driveFolderId": request.input.driveFolderId, **_exception_details(exc)},
                     ),
                 )
-            for fname, fid in drive_files:
-                try:
-                    data = _download_drive_file(fid)
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(
-                        Warning(
-                            code="DRIVE_DOWNLOAD_FAILED",
-                            message=f"Failed to download {fname}",
-                            details={"fileId": fid, "fileName": fname, **_exception_details(exc)},
-                        )
-                    )
-                    continue
-                raw_entries.append((fname, data, SourceInfo(driveFileId=fid, originalName=fname)))
+            if drive_files:
+                workers = min(len(drive_files), settings.normalize_workers)
+                entries: List[Tuple[str, bytes, SourceInfo] | None] = [None] * len(drive_files)
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(_download_drive_entry, fid, fname): idx
+                        for idx, (fname, fid) in enumerate(drive_files)
+                    }
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        fname, fid = drive_files[idx]
+                        try:
+                            entries[idx] = fut.result()
+                        except Exception as exc:  # noqa: BLE001
+                            warnings.append(
+                                Warning(
+                                    code="DRIVE_DOWNLOAD_FAILED",
+                                    message=f"Failed to download {fname}",
+                                    details={"fileId": fid, "fileName": fname, **_exception_details(exc)},
+                                )
+                            )
+                raw_entries.extend([entry for entry in entries if entry])
 
         if sort_entries:
             raw_entries = sorted(raw_entries, key=lambda entry: entry[0].lower())
@@ -249,99 +377,43 @@ async def run_normalize(request: NormalizeRequest, settings: Settings) -> Normal
 
     gcs_prefix = gcs.normalize_prefix(request.output.gcsPrefix)
 
-    for idx, (name, data, source) in enumerate(raw_entries):
-        ext = name.split(".")[-1].lower() if "." in name else ""
-        normalized_bytes: bytes | None = None
-        mime = ""
-        page_count = None
-        target_ext = ""
-        original_uri = None
-
-        try:
-            if ext in SUPPORTED_IMAGE_EXTS:
-                img = Image.open(io.BytesIO(data))
-                img = apply_exif_orientation(img)
-                img = resize_image_max_side(img, max_side)
-                img = ensure_rgb(img)
-                normalized_bytes = image_to_jpeg_bytes(img, jpg_quality)
-                mime = "image/jpeg"
-                target_ext = "jpg"
-            elif ext in {"pdf"}:
-                if pdf_mode == "rasterize":
-                    warnings.append(
-                        Warning(
-                            code="PDF_RASTERIZE_NOT_IMPLEMENTED",
-                            message="pdfMode=rasterize not implemented; keeping PDF as-is.",
-                            details={"file": name},
-                        )
-                    )
-                normalized_bytes = data
-                mime = "application/pdf"
-                target_ext = "pdf"
+    if raw_entries:
+        workers = min(len(raw_entries), settings.normalize_workers)
+        items_by_idx: List[NormalizeItem | None] = [None] * len(raw_entries)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _normalize_entry,
+                    idx,
+                    name,
+                    data,
+                    source,
+                    jpg_quality=jpg_quality,
+                    max_side=max_side,
+                    pdf_mode=pdf_mode,
+                    upload_originals=upload_originals,
+                    gcs_prefix=gcs_prefix,
+                ): idx
+                for idx, (name, data, source) in enumerate(raw_entries)
+            }
+            for fut in as_completed(futures):
+                idx = futures[fut]
                 try:
-                    reader = PdfReader(io.BytesIO(data))
-                    page_count = len(reader.pages)
-                except Exception:
-                    page_count = None
-            else:
-                warnings.append(
-                    Warning(
-                        code="UNSUPPORTED_FILE_TYPE",
-                        message=f"Skipping unsupported file: {name}",
-                        details={"extension": ext, "filename": name},
-                    )
-                )
-                continue
-
-            sha = sha256_bytes(normalized_bytes)
-            object_path = f"{gcs_prefix}normalized/{idx:04d}_{sha}.{target_ext}"
-            gcs_uri = gcs.upload_bytes(normalized_bytes, object_path) #, content_type=mime)
-
-            if upload_originals:
-                try:
-                    original_path = f"{gcs_prefix}originals/{idx:04d}_{name}"
-                    original_uri = gcs.upload_bytes(data, original_path)
+                    _, item, entry_warnings = fut.result()
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(
                         Warning(
-                            code="ORIGINAL_UPLOAD_FAILED",
-                            message=f"Failed to upload original for {name}",
-                            details={
-                                "filename": name,
-                                "targetPath": original_path,
-                                **_exception_details(exc),
-                            },
+                            code="NORMALIZATION_FAILED",
+                            message="Failed to process item",
+                            details={"index": idx, **_exception_details(exc)},
                         )
                     )
-
-            items.append(
-                NormalizeItem(
-                    source=source,
-                    normalized=NormalizedArtifact(
-                        gcsUri=gcs_uri,
-                        mime=mime,
-                        sha256=sha,
-                        bytes=len(normalized_bytes),
-                        pageCount=page_count,
-                        originalGcsUri=original_uri,
-                        originalMime=MIME_TYPE_MAP.get(ext, ""),
-                    ),
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(
-                Warning(
-                    code="NORMALIZATION_FAILED",
-                    message=f"Failed to process {name}",
-                    details={
-                        "filename": name,
-                        "source": source.model_dump(exclude_none=True),
-                        "extension": ext,
-                        **_exception_details(exc),
-                    },
-                )
-            )
-            continue
+                    continue
+                if item:
+                    items_by_idx[idx] = item
+                if entry_warnings:
+                    warnings.extend(entry_warnings)
+        items = [item for item in items_by_idx if item]
 
     # Manifest (optional)
     manifest_uri = None

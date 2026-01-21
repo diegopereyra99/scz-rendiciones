@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \ 
+    git \ 
     libjpeg-dev \ 
     zlib1g-dev \ 
     && rm -rf /var/lib/apt/lists/*
@@ -16,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 COPY templates ./templates
+COPY profiles ./profiles
 
 EXPOSE ${PORT}
 

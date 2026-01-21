@@ -1,7 +1,8 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Automatización')
-    .addItem('1) Procesar archivos (IA → planilla)', 'ui_process_all')
+    .addItem('1) Procesar Comprobantes efectivo', 'ui_process_cash')
+    .addItem('2) Procesar Comprobantes tarjeta corporativa', 'ui_process_card')
     .addItem('2) Generar Excel + PDF', 'ui_stage3_finalize')
     .addItem('Reiniciar todo', 'clearAllRows')
     .addToUi();
@@ -9,11 +10,19 @@ function onOpen() {
 
 /** ---------- UI wrappers (abren HTML) ---------- */
 
-function ui_process_all() {
+function ui_process_cash() {
   return showModal_('stage_wait', {
     title: 'Procesando archivos…',
-    action: 'stage_upload_and_process',
-    description: 'Preprocesando, analizando con IA y escribiendo la planilla.'
+    action: 'stage_upload_and_process_cash',
+    description: 'Preprocesando, analizando con IA y escribiendo la planilla (efectivo).'
+  });
+}
+
+function ui_process_card() {
+  return showModal_('stage_wait', {
+    title: 'Procesando archivos…',
+    action: 'stage_upload_and_process_card',
+    description: 'Preprocesando, analizando con IA y escribiendo la planilla (tarjeta).'
   });
 }
 
@@ -36,23 +45,35 @@ function showModal_(htmlFile, data) {
 
 /** ---------- Backend handlers (llamados desde HTML) ---------- */
 
-function stage1_upload() {
-  return runStage1Upload_();
+function stage1_upload(mode) {
+  return runStage1Upload_(mode || 'efectivo');
 }
 
-function stage_upload_and_process() {
-  const uploadRes = runStage1Upload_();
+function stage_upload_and_process_cash() {
+  return stage_upload_and_process_('efectivo');
+}
+
+function stage_upload_and_process_card() {
+  return stage_upload_and_process_('tarjeta');
+}
+
+function stage_upload_and_process_(mode) {
+  const uploadRes = runStage1Upload_(mode);
   if (!uploadRes?.ok) return uploadRes;
 
-  const analyzeRes = stage2_process_analyze();
+  const analyzeRes = stage2_process_analyze_by_mode_(mode);
   if (!analyzeRes?.ok) return analyzeRes;
 
-  const writeRes = stage2_write_results(analyzeRes.items || analyzeRes.payload?.items || []);
-  if (!writeRes?.ok) return writeRes;
+  const items = analyzeRes.items || analyzeRes.payload?.items || [];
+  let writeRes = { ok: true, message: analyzeRes.message || null, payload: null };
+  if (!analyzeRes.skipWrite) {
+    writeRes = stage2_write_results(items);
+    if (!writeRes?.ok) return writeRes;
+  }
 
   return {
     ok: true,
-    message: writeRes.message || 'Archivos procesados y planilla actualizada.',
+    message: writeRes.message || analyzeRes.message || 'Archivos procesados y planilla actualizada.',
     payload: {
       upload: uploadRes.payload || null,
       process: analyzeRes.payload || null,
@@ -61,18 +82,62 @@ function stage_upload_and_process() {
   };
 }
 
-function runStage1Upload_() {
+function runStage1Upload_(mode) {
   const rendicionId = buildRendicionId_();
-  const driveFiles = listDriveFiles_(FOLDER_ID);
+  const folderId = getModeFolderId_(mode);
+  const driveFiles = listDriveFiles_(folderId);
   if (!driveFiles.length) return { ok: false, message: 'No hay archivos en la carpeta.' };
 
+  const st = jobStateGet_();
+  const prevByMode = st?.normalizedItemsByMode || {};
+  const prevItems = prevByMode[mode] || [];
+  const prevIds = prevItems.map((it) => it.driveFileId).filter((id) => !!id);
+  const prevSet = new Set(prevIds);
+
+  const currentIds = driveFiles.map((f) => f.id);
+  const currentSet = new Set(currentIds);
+  const addedIds = currentIds.filter((id) => !prevSet.has(id));
+  const removedIds = prevIds.filter((id) => !currentSet.has(id));
+
+  if (!addedIds.length && !removedIds.length && prevItems.length) {
+    jobStateSet_(Object.assign({}, st, { rendicionId, mode, sourceFolderId: folderId }));
+    return {
+      ok: true,
+      message: 'No hay archivos nuevos; se reutilizan los normalizados existentes.',
+      payload: { rendicionId, mode, reused: true }
+    };
+  }
+
   let input = null;
+  let filesForNormalize = driveFiles;
 
   if (DRIVE_API_ENABLED) {
-    input = { driveFileIds: driveFiles.map(f => f.id) };
+    filesForNormalize = driveFiles.filter((f) => addedIds.indexOf(f.id) !== -1);
+    if (!filesForNormalize.length && removedIds.length) {
+      const remaining = prevItems.filter((it) => !removedIds.includes(it.driveFileId));
+      const nextByMode = Object.assign({}, prevByMode, { [mode]: remaining });
+      jobStateSet_(Object.assign({}, st, { rendicionId, mode, sourceFolderId: folderId, normalizedItemsByMode: nextByMode }));
+      return {
+        ok: true,
+        message: 'Se actualizaron eliminaciones; no hay archivos nuevos.',
+        payload: { rendicionId, mode, removed: removedIds }
+      };
+    }
+    input = { driveFileIds: filesForNormalize.map(f => f.id) };
   } else {
-    const zipBlob = buildZipFromDriveFolder_(FOLDER_ID);
-    const objectName = buildInputsZipObjectName_();
+    filesForNormalize = driveFiles.filter((f) => addedIds.indexOf(f.id) !== -1);
+    if (!filesForNormalize.length && removedIds.length) {
+      const remaining = prevItems.filter((it) => !removedIds.includes(it.driveFileId));
+      const nextByMode = Object.assign({}, prevByMode, { [mode]: remaining });
+      jobStateSet_(Object.assign({}, st, { rendicionId, mode, sourceFolderId: folderId, normalizedItemsByMode: nextByMode }));
+      return {
+        ok: true,
+        message: 'Se actualizaron eliminaciones; no hay archivos nuevos.',
+        payload: { rendicionId, mode, removed: removedIds }
+      };
+    }
+    const zipBlob = buildZipFromDriveFolder_(folderId, filesForNormalize);
+    const objectName = buildInputsZipObjectName_(mode);
     const gcsUri = uploadBlobToGCS_(GCS_BUCKET, objectName, zipBlob);
 
     input = { zipGcsUri: gcsUri }; // <- si tu servicio lo llama distinto, lo ajustamos acá
@@ -93,19 +158,28 @@ function runStage1Upload_() {
   const res = callCloudRunJson_('/v1/normalize', req);
   if (!res?.ok) throw new Error(`Normalize ok=false: ${JSON.stringify(res)}`);
 
-  jobStateSet_({
+  const driveIdByName = new Map(driveFiles.map((f) => [f.name, f.id]));
+  const newItems = (res.items || []).map((it, idx) => ({
+    gcsUri: it.normalized?.gcsUri,
+    mime: it.normalized?.mime,
+    mimeType: it.normalized?.mime, // compat
+    normalizedIndex: String(idx).padStart(4, '0'),
+    originalName: it.source?.originalName || null,
+    driveFileId: it.source?.driveFileId || (it.source?.originalName ? driveIdByName.get(it.source.originalName) : null)
+  })).filter(x => !!x.gcsUri);
+
+  const remaining = prevItems.filter((it) => !removedIds.includes(it.driveFileId));
+  const merged = remaining.concat(newItems);
+  const nextByMode = Object.assign({}, prevByMode, { [mode]: merged });
+
+  jobStateSet_(Object.assign({}, st, {
     rendicionId,
     gcsPrefix: GCS_PREFIX,
+    mode,
+    sourceFolderId: folderId,
     manifestGcsUri: res.manifestGcsUri || null,
-    normalizedItems: (res.items || []).map((it, idx) => ({
-      gcsUri: it.normalized?.gcsUri,
-      mime: it.normalized?.mime,
-      mimeType: it.normalized?.mime, // compat
-      normalizedIndex: String(idx).padStart(4, '0'),
-      originalName: it.source?.originalName || null,
-      driveFileId: it.source?.driveFileId || null
-    })).filter(x => !!x.gcsUri),
-  });
+    normalizedItemsByMode: nextByMode
+  }));
 
   Logger.log(res)
   return {
@@ -145,9 +219,212 @@ function runStage1Upload_() {
 
 
 function stage2_process() {
-  const analyzeRes = stage2_process_analyze();
+  const st = jobStateGet_();
+  const mode = st?.mode || 'efectivo';
+  const analyzeRes = stage2_process_analyze_by_mode_(mode);
   if (!analyzeRes?.ok) return analyzeRes;
+  if (analyzeRes.skipWrite) return analyzeRes;
   return stage2_write_results(analyzeRes.items || analyzeRes.payload?.items || []);
+}
+
+function stage2_process_analyze_by_mode_(mode) {
+  if (mode === 'efectivo') return stage2_process_analyze_efectivo_();
+  if (mode === 'tarjeta') {
+    return stage2_process_analyze_tarjeta_();
+  }
+  return { ok: false, message: `Modo inválido: ${mode}` };
+}
+
+function stage2_process_analyze_by_mode(mode) {
+  return stage2_process_analyze_by_mode_(mode);
+}
+
+function stage2_process_statement_() {
+  const st = jobStateGet_();
+  if (!st?.rendicionId) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay rendicionId).' };
+  }
+
+  const statementFile = getSingleStatementFile_();
+  if (!statementFile) return { ok: false, message: 'No hay archivo de estado de cuenta.' };
+  const prevFile = st?.lastStatementFile || null;
+  const sameFile = !!(prevFile &&
+    prevFile.id === statementFile.id &&
+    prevFile.size === statementFile.size &&
+    prevFile.updated === statementFile.updated);
+
+  if (sameFile && st?.lastEstadoCuenta) {
+    return {
+      ok: true,
+      message: 'Estado de cuenta sin cambios; se reutiliza el último.',
+      items: buildStatementItems_(st.lastEstadoCuenta),
+      payload: { statement: st.lastEstadoCuenta, reused: true }
+    };
+  }
+
+  const statementReq = {
+    rendicionId: st.rendicionId,
+    statement: {
+      driveFileId: statementFile.id,
+      mime: statementFile.mimeType || null
+    }
+  };
+
+  const statementRes = callCloudRunJson_('/v1/process_statement', statementReq);
+  if (!statementRes?.ok) throw new Error(`process_statement ok=false: ${JSON.stringify(statementRes)}`);
+
+  const statementData = statementRes.data || {};
+  const statementItems = buildStatementItems_(statementData);
+  if (!statementItems.length) {
+    return { ok: false, message: 'No se pudieron extraer líneas del estado de cuenta.' };
+  }
+
+  writeStatementToSheet_(statementData);
+  jobStateSet_(Object.assign({}, st, {
+    lastEstadoCuenta: statementData || null,
+    lastStatementFile: {
+      id: statementFile.id,
+      size: statementFile.size,
+      updated: statementFile.updated
+    }
+  }));
+
+  return {
+    ok: true,
+    message: 'Estado de cuenta procesado.',
+    items: statementItems,
+    payload: { statement: statementData }
+  };
+}
+
+function stage2_process_statement() {
+  return stage2_process_statement_();
+}
+
+function stage2_process_receipts_tarjeta_(options) {
+  const st = jobStateGet_();
+  if (!st?.rendicionId) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay rendicionId).' };
+  }
+
+  const statementData = st?.lastEstadoCuenta || null;
+  if (!statementData) {
+    return { ok: false, message: 'Primero procesá el estado de cuenta.' };
+  }
+
+  const statementItems = buildStatementItems_(statementData);
+  const normalizedItems = getNormalizedItemsForMode_(st, 'tarjeta');
+  const receipts = (normalizedItems || []).map((it) => ({
+    gcsUri: it.gcsUri,
+    mime: it.mime || it.mimeType || null
+  })).filter((it) => !!it.gcsUri);
+
+  if (!receipts.length) {
+    return {
+      ok: true,
+      message: 'Estado de cuenta escrito. No hay comprobantes para procesar.',
+      items: statementItems,
+      orphanRowIndexes: [],
+      skipWrite: true,
+      noReceipts: true,
+      payload: { statement: statementData }
+    };
+  }
+
+  const rows = [];
+  const batches = chunkArray_(receipts, PROCESS_BATCH_SIZE);
+  batches.forEach((batch) => {
+    const receiptsReq = {
+      rendicionId: st.rendicionId,
+      mode: 'tarjeta',
+      statement: { parsed: statementData },
+      receipts: batch
+    };
+    const receiptsRes = callCloudRunJson_('/v1/process_receipts_batch', receiptsReq);
+    if (!receiptsRes?.ok) throw new Error(`process_receipts_batch ok=false: ${JSON.stringify(receiptsRes)}`);
+    if (Array.isArray(receiptsRes.rows)) rows.push.apply(rows, receiptsRes.rows);
+  });
+
+  const receiptItems = flattenDocflowRows_(rows);
+  const orderList = buildOrderListFromItems_(receiptItems);
+  const merged = mergeStatementWithReceipts_(statementItems, receiptItems);
+  const doWrite = !(options && options.write === false);
+
+  if (doWrite) {
+    writeItemsToSheet(merged.items);
+    markRowsColor_(merged.orphanRowIndexes, COLOR_ORPHAN);
+  }
+
+  jobStateSet_(Object.assign({}, st, {
+    lastEstadoCuenta: statementData || null,
+    lastOrdenArchivos: orderList && orderList.length ? orderList : st.lastOrdenArchivos || null
+  }));
+
+  return {
+    ok: true,
+    message: `Tarjeta procesada: ${merged.items.length || 0} filas.`,
+    items: merged.items,
+    orphanRowIndexes: merged.orphanRowIndexes,
+    skipWrite: !doWrite,
+    payload: {
+      statement: statementData,
+      rows: rows
+    }
+  };
+}
+
+function stage2_process_receipts_tarjeta(options) {
+  return stage2_process_receipts_tarjeta_(options);
+}
+
+function stage2_process_analyze_efectivo_() {
+  const st = jobStateGet_();
+  const normalizedItems = getNormalizedItemsForMode_(st, 'efectivo');
+  if (!st?.rendicionId || !normalizedItems?.length) {
+    return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems guardados).' };
+  }
+
+  const receipts = (normalizedItems || []).map((it) => ({
+    gcsUri: it.gcsUri,
+    mime: it.mime || it.mimeType || null
+  })).filter((it) => !!it.gcsUri);
+
+  const rows = [];
+  const batches = chunkArray_(receipts, PROCESS_BATCH_SIZE);
+  batches.forEach((batch) => {
+    const req = {
+      rendicionId: st.rendicionId,
+      mode: 'efectivo',
+      receipts: batch
+    };
+    const res = callCloudRunJson_('/v1/process_receipts_batch', req);
+    if (!res?.ok) throw new Error(`process_receipts_batch ok=false: ${JSON.stringify(res)}`);
+    if (Array.isArray(res.rows)) rows.push.apply(rows, res.rows);
+  });
+
+  const items = sortItemsByDate_(flattenDocflowRows_(rows));
+  const orderList = buildOrderListFromItems_(items);
+  jobStateSet_(Object.assign({}, st, { lastOrdenArchivos: orderList || null }));
+
+  return {
+    ok: true,
+    message: `Comprobantes detectados: ${items.length || 0}.`,
+    items,
+    payload: {
+      rows,
+      items
+    }
+  };
+}
+
+function stage2_process_analyze_tarjeta_() {
+  const statementRes = stage2_process_statement_();
+  if (!statementRes?.ok) return statementRes;
+
+  const receiptsRes = stage2_process_receipts_tarjeta_();
+  if (!receiptsRes?.ok) return receiptsRes;
+
+  return Object.assign({}, receiptsRes, { skipWrite: true });
 }
 
 function stage2_process_analyze() {
@@ -180,6 +457,368 @@ function stage2_process_analyze() {
   };
 }
 
+function flattenDocflowRows_(rows) {
+  if (!Array.isArray(rows)) return [];
+  const out = [];
+  rows.forEach((row) => {
+    if (!row) return;
+    const data = row.data !== undefined ? row.data : row;
+    const docNames = row?.meta?.docs || null;
+    if (Array.isArray(data)) {
+      data.forEach((item) => {
+        if (docNames) item.__doc_names = docNames;
+        out.push(item);
+      });
+    } else if (data) {
+      if (docNames) data.__doc_names = docNames;
+      out.push(data);
+    }
+  });
+  return out;
+}
+
+function getNormalizedItemsForMode_(st, mode) {
+  if (!st) return [];
+  const byMode = st.normalizedItemsByMode || {};
+  if (Array.isArray(byMode[mode]) && byMode[mode].length) return byMode[mode];
+  if (Array.isArray(st.normalizedItems) && st.normalizedItems.length) return st.normalizedItems;
+  return [];
+}
+
+function chunkArray_(arr, size) {
+  const out = [];
+  const n = Math.max(1, size || 1);
+  for (let i = 0; i < (arr || []).length; i += n) {
+    out.push(arr.slice(i, i + n));
+  }
+  return out;
+}
+
+function parseIsoDate_(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+function sortItemsByDate_(items) {
+  const list = (items || []).map((item, idx) => {
+    const d = parseIsoDate_(item?.['Fecha de factura'] || item?.fecha);
+    return { item, idx, date: d };
+  });
+  list.sort((a, b) => {
+    if (!a.date && !b.date) return a.idx - b.idx;
+    if (!a.date) return 1;
+    if (!b.date) return -1;
+    if (a.date.getTime() === b.date.getTime()) return a.idx - b.idx;
+    return a.date.getTime() - b.date.getTime();
+  });
+  return list.map((e) => e.item);
+}
+
+function buildOrderListFromItems_(items) {
+  const firstDateByKey = new Map();
+  (items || []).forEach((item) => {
+    const key = extractSourceKey_(item);
+    if (!key) return;
+    const d = parseIsoDate_(item?.['Fecha de factura'] || item?.fecha);
+    if (!d) return;
+    if (!firstDateByKey.has(key) || d < firstDateByKey.get(key)) {
+      firstDateByKey.set(key, d);
+    }
+  });
+  const entries = Array.from(firstDateByKey.entries());
+  entries.sort((a, b) => a[1] - b[1]);
+  return entries.map((e) => e[0]);
+}
+
+function extractSourceKey_(item) {
+  if (!item) return null;
+  const docs = item.__doc_names;
+  if (Array.isArray(docs) && docs.length) {
+    const base = extractDocBasename_(docs[0]);
+    const driveId = extractDriveIdFromDocName_(base);
+    if (driveId) return driveId;
+    return base || extractIndexFromDocName_(docs[0]) || docs[0];
+  }
+  if (typeof docs === 'string') {
+    const base = extractDocBasename_(docs);
+    const driveId = extractDriveIdFromDocName_(base);
+    return driveId || base || extractIndexFromDocName_(docs) || docs;
+  }
+  return null;
+}
+
+function extractIndexFromDocName_(name) {
+  if (!name) return null;
+  const s = String(name).trim();
+  if (!s) return null;
+  const m = s.match(/(^|\/)(\d{4})_/);
+  if (m) return `f${m[2]}`;
+  const m2 = s.match(/f(\d{4})/i);
+  if (m2) return `f${m2[1]}`;
+  return null;
+}
+
+function extractDocBasename_(name) {
+  if (!name) return null;
+  const s = String(name).trim();
+  if (!s) return null;
+  const parts = s.split(/[\\/]/);
+  return parts[parts.length - 1] || s;
+}
+
+function extractDriveIdFromDocName_(name) {
+  if (!name) return null;
+  const s = String(name).trim();
+  if (!s) return null;
+  const m = s.match(/drive_([A-Za-z0-9_-]+)/i);
+  if (m) return m[1];
+  return null;
+}
+
+function getSingleStatementFile_() {
+  const folderId = getStatementFolderId_();
+  if (!folderId) throw new Error(`No existe la carpeta: ${FOLDER_ESTADO_NAME}`);
+  const files = listDriveFiles_(folderId);
+  if (!files.length) throw new Error('No hay archivos en Estado de cuenta.');
+  if (files.length > 1) throw new Error('Debe existir un solo archivo en Estado de cuenta.');
+  const file = DriveApp.getFileById(files[0].id);
+  return {
+    id: file.getId(),
+    name: file.getName(),
+    mimeType: file.getMimeType(),
+    size: file.getSize(),
+    updated: file.getLastUpdated().getTime()
+  };
+}
+
+function buildStatementItems_(data) {
+  const txs = Array.isArray(data?.transacciones) ? data.transacciones : [];
+  const out = [];
+  txs.forEach((tx, idx) => {
+    const res = mapStatementAmount_(tx);
+    const item = {
+      'Fecha de factura': tx?.fecha || null,
+      'Proveedor': tx?.detalle || null,
+      'Importe a rendir': res.amount,
+      'Moneda': res.currency,
+      'Warnings': res.warnings || []
+    };
+    item.__statement_idx = idx + 1;
+    out.push(item);
+  });
+  return out;
+}
+
+function mapStatementAmount_(tx) {
+  const warnings = [];
+  if (tx?.importe_uyu !== null && tx?.importe_uyu !== undefined) {
+    return { amount: tx.importe_uyu, currency: 'UYU', warnings };
+  }
+  if (tx?.importe_usd !== null && tx?.importe_usd !== undefined) {
+    return { amount: tx.importe_usd, currency: 'USD', warnings };
+  }
+  if (tx?.importe_origen !== null && tx?.importe_origen !== undefined) {
+    return { amount: tx.importe_origen, currency: 'USD', warnings };
+  }
+  warnings.push({ campo: 'Importe a rendir', mensaje: 'Importe no identificado en estado de cuenta.' });
+  return { amount: null, currency: null, warnings };
+}
+
+function mergeStatementWithReceipts_(statementItems, receiptItems) {
+  const out = statementItems.map((it) => Object.assign({}, it));
+  const matched = new Set();
+  const baseReceiptByIdx = new Map();
+  const docNamesByIdx = new Map();
+  const orphanRows = [];
+
+  receiptItems.forEach((item) => {
+    const idx = extractStatementIdx_(item);
+    if (idx && idx >= 1 && idx <= out.length && !matched.has(idx)) {
+      const base = out[idx - 1];
+      checkStatementAmountMatch_(base, item);
+      out[idx - 1] = mergeItemsPreferNonNull_(base, item);
+      matched.add(idx);
+      baseReceiptByIdx.set(idx, item);
+      docNamesByIdx.set(idx, collectDocNames_(item));
+      return;
+    }
+    if (idx && idx >= 1 && idx <= out.length && matched.has(idx)) {
+      const base = baseReceiptByIdx.get(idx);
+      const baseStatement = out[idx - 1];
+      const baseDocs = docNamesByIdx.get(idx) || [];
+      const nextDocs = collectDocNames_(item);
+      const allDocs = baseDocs.concat(nextDocs).filter((v, i, a) => a.indexOf(v) === i);
+      docNamesByIdx.set(idx, allDocs);
+      if (!base || areItemsConcordant_(base, item)) {
+        checkStatementAmountMatch_(baseStatement, item);
+        out[idx - 1] = mergeItemsPreferNonNull_(out[idx - 1], item);
+      } else {
+        addWarning_(out[idx - 1], 'general',
+          `Comprobantes con el mismo idx no concuerdan: ${allDocs.join(', ') || 'sin nombre'}.`);
+      }
+      return;
+    }
+    addWarning_(item, 'general', 'Comprobante sin movimiento en estado de cuenta.');
+    addStatementObservation_(item, 'Comprobante sin movimiento en estado de cuenta.');
+    out.push(item);
+    orphanRows.push(out.length);
+  });
+
+  out.forEach((item, i) => {
+    if (i >= statementItems.length) return;
+    if (!matched.has(i + 1)) {
+      addWarning_(item, 'general', 'Falta comprobante asociado a esta línea del estado de cuenta.');
+      addStatementObservation_(item, 'Falta comprobante asociado a esta línea del estado de cuenta.');
+    }
+  });
+
+  return { items: out.map((it) => scrubInternalKeys_(it)), orphanRowIndexes: orphanRows.map((n) => START_ROW + n - 1) };
+}
+
+function extractStatementIdx_(item) {
+  const st = item?.['Estado de cuenta'] || item?.estadoCuenta || item?.estado_cuenta || null;
+  const idx = st?.idx;
+  if (idx === null || idx === undefined) return null;
+  const num = parseInt(idx, 10);
+  return Number.isFinite(num) ? num : null;
+}
+
+function collectDocNames_(item) {
+  if (!item) return [];
+  const docs = item.__doc_names;
+  if (Array.isArray(docs)) return docs.map(String);
+  if (docs) return [String(docs)];
+  return [];
+}
+
+function areItemsConcordant_(a, b) {
+  if (!a || !b) return true;
+  const pairs = [
+    ['Proveedor', 'Proveedor'],
+    ['Moneda', 'Moneda'],
+    ['Fecha de factura', 'Fecha de factura'],
+    ['Numero de Factura', 'Numero de Factura'],
+    ['Importe facturado', 'Importe facturado'],
+    ['Importe a rendir', 'Importe a rendir']
+  ];
+  for (let i = 0; i < pairs.length; i++) {
+    const keyA = pairs[i][0];
+    const keyB = pairs[i][1];
+    const va = a[keyA];
+    const vb = b[keyB];
+    if (va === null || va === undefined || va === '') continue;
+    if (vb === null || vb === undefined || vb === '') continue;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      if (Math.abs(va - vb) > 0.01) return false;
+    } else {
+      const sa = String(va).trim().toLowerCase();
+      const sb = String(vb).trim().toLowerCase();
+      if (sa && sb && sa !== sb) return false;
+    }
+  }
+  return true;
+}
+
+function mergeItemsPreferNonNull_(base, extra) {
+  const out = Object.assign({}, base);
+  Object.keys(extra || {}).forEach((k) => {
+    if (k === 'Warnings') return;
+    const v = extra[k];
+    if (k === 'Estado de cuenta' && v && typeof v === 'object') {
+      const merged = mergeEstadoCuenta_(out[k], v);
+      if (merged) out[k] = merged;
+      return;
+    }
+    if (k === 'Importe a rendir' && out[k] !== null && out[k] !== undefined && out[k] !== '') {
+      return;
+    }
+    if (v !== null && v !== undefined && v !== '') {
+      out[k] = v;
+    }
+  });
+  const mergedWarnings = [];
+  const baseWarnings = base?.Warnings || [];
+  const extraWarnings = extra?.Warnings || [];
+  if (Array.isArray(baseWarnings)) mergedWarnings.push.apply(mergedWarnings, baseWarnings);
+  if (Array.isArray(extraWarnings)) mergedWarnings.push.apply(mergedWarnings, extraWarnings);
+  if (mergedWarnings.length) out.Warnings = mergedWarnings;
+  return out;
+}
+
+function mergeEstadoCuenta_(base, extra) {
+  if (!base && !extra) return null;
+  const out = Object.assign({}, base || {});
+  Object.keys(extra || {}).forEach((k) => {
+    const v = extra[k];
+    if (v !== null && v !== undefined && v !== '') {
+      out[k] = v;
+    }
+  });
+  if (base?.observacion && extra?.observacion) {
+    const b = String(base.observacion).trim();
+    const e = String(extra.observacion).trim();
+    if (b && e && b !== e) out.observacion = `${b} ${e}`;
+  }
+  return out;
+}
+
+function addWarning_(item, campo, mensaje) {
+  if (!item) return;
+  if (!Array.isArray(item.Warnings)) item.Warnings = [];
+  item.Warnings.push({ campo: campo || 'general', mensaje: mensaje || '' });
+}
+
+function addStatementObservation_(item, message) {
+  if (!item || !message) return;
+  if (!item['Estado de cuenta'] || typeof item['Estado de cuenta'] !== 'object') {
+    item['Estado de cuenta'] = {};
+  }
+  const st = item['Estado de cuenta'];
+  const prev = st.observacion ? String(st.observacion).trim() : '';
+  st.observacion = prev ? `${prev} ${message}` : message;
+}
+
+function checkStatementAmountMatch_(statementItem, receiptItem) {
+  if (!statementItem || !receiptItem) return;
+  const stmt = getNumeric_(statementItem['Importe a rendir']);
+  const rec = getNumeric_(receiptItem['Importe a rendir']);
+  if (stmt === null || rec === null) return;
+  if (Math.abs(stmt - rec) > 0.01) {
+    const msg = `Importe a rendir no coincide con estado de cuenta (${stmt} vs ${rec}).`;
+    addWarning_(statementItem, 'Importe a rendir', msg);
+    addStatementObservation_(statementItem, msg);
+  }
+}
+
+function getNumeric_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function scrubInternalKeys_(item) {
+  if (!item) return item;
+  if (item.__statement_idx !== undefined) delete item.__statement_idx;
+  if (item.__doc_names !== undefined) delete item.__doc_names;
+  return item;
+}
+
+function markRowsColor_(rowIndexes, color) {
+  if (!Array.isArray(rowIndexes) || !rowIndexes.length) return;
+  const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAME);
+  if (!sheet) throw new Error('Sheet not found: ' + SHEET_NAME);
+  const cols = getWriteColumnIndexes_();
+  rowIndexes.forEach((row) => {
+    cols.forEach((col) => {
+      sheet.getRange(row, col).setBackground(color);
+    });
+  });
+}
+
 function stage2_write_results(items) {
   if (!items || !items.length) {
     return { ok: false, message: 'No hay comprobantes para escribir.' };
@@ -188,10 +827,25 @@ function stage2_write_results(items) {
   return { ok: true, message: `Planilla actualizada: ${items?.length || 0} comprobantes escritos.`, payload: { count: items.length } };
 }
 
+function stage2_write_tarjeta_results_(items, orphanRowIndexes) {
+  const res = writeTarjetaItemsToSheet_(items);
+  if (!res?.ok) return res;
+  if (Array.isArray(orphanRowIndexes) && orphanRowIndexes.length) {
+    markRowsColor_(orphanRowIndexes, COLOR_ORPHAN);
+  }
+  return res;
+}
+
+function stage2_write_tarjeta_results(items, orphanRowIndexes) {
+  return stage2_write_tarjeta_results_(items, orphanRowIndexes);
+}
+
 
 function stage3_finalize() {
   const st = jobStateGet_();
-  if (!st?.rendicionId || !st?.normalizedItems?.length) {
+  const mode = st?.mode || 'efectivo';
+  const normalizedItems = getNormalizedItemsForMode_(st, mode);
+  if (!st?.rendicionId || !normalizedItems?.length) {
     return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems).' };
   }
 
@@ -209,7 +863,9 @@ function stage3_finalize() {
 
 function stage3_create_cover() {
   const st = jobStateGet_();
-  if (!st?.rendicionId || !st?.normalizedItems?.length) {
+  const mode = st?.mode || 'efectivo';
+  const normalizedItems = getNormalizedItemsForMode_(st, mode);
+  if (!st?.rendicionId || !normalizedItems?.length) {
     return { ok: false, message: 'Primero corré etapa 1 (no hay normalizedItems).' };
   }
 
@@ -224,7 +880,9 @@ function stage3_create_cover() {
 
 function stage3_generate_outputs(coverGcsUri) {
   const st = jobStateGet_();
-  if (!st?.rendicionId || !st?.normalizedItems?.length) {
+  const mode = st?.mode || 'efectivo';
+  const normalizedItems = getNormalizedItemsForMode_(st, mode);
+  if (!st?.rendicionId || !normalizedItems?.length) {
     return { ok: false, message: 'Primero corré etapa 1 (no hay items).' };
   }
 
@@ -233,7 +891,7 @@ function stage3_generate_outputs(coverGcsUri) {
 
   // 2) celdas a mandar (solo FIELD_COLUMN_MAP)
   const orderedItems = reorderNormalizedItemsByOrder_(
-    st.normalizedItems || [],
+    normalizedItems || [],
     st.lastOrdenArchivos || st.ordenArchivos || []
   );
 
@@ -249,7 +907,7 @@ function stage3_generate_outputs(coverGcsUri) {
       xlsmValues
     },
     output: {
-      // driveFolderId: OUTPUT_FOLDER_ID,
+      driveFolderId: getOutputFolderId_(),
       gcsPrefix: st.gcsPrefix
     },
     options: {
@@ -328,12 +986,20 @@ function reorderNormalizedItemsByOrder_(items, orderList) {
   if (!order.length) return items;
 
   const itemsWithIndex = items.map((item, idx) => {
-    return { item, idx, key: getItemNormalizedIndex_(item, idx) };
+    return {
+      item,
+      idx,
+      key: getItemNormalizedIndex_(item, idx),
+      driveFileId: item?.driveFileId || null,
+      docName: getItemDocName_(item)
+    };
   });
 
   const byKey = new Map();
   itemsWithIndex.forEach((entry) => {
     if (entry.key && !byKey.has(entry.key)) byKey.set(entry.key, entry);
+    if (entry.driveFileId && !byKey.has(entry.driveFileId)) byKey.set(entry.driveFileId, entry);
+    if (entry.docName && !byKey.has(entry.docName)) byKey.set(entry.docName, entry);
   });
 
   const orderedEntries = [];
@@ -359,12 +1025,26 @@ function reorderNormalizedItemsByOrder_(items, orderList) {
 
 function normalizeOrderToken_(token) {
   if (token === null || token === undefined) return null;
-  const str = String(token).trim().toLowerCase();
+  const raw = String(token).trim();
+  if (!raw) return null;
+  const driveMatch = raw.match(/drive_([A-Za-z0-9_-]+)/i);
+  if (driveMatch) return driveMatch[1];
+  const str = raw.toLowerCase();
   if (!str) return null;
   const cleaned = str.startsWith('f') ? str.slice(1) : str;
-  const m = cleaned.match(/^(\d{1,4})/);
-  if (!m) return null;
-  return m[1].padStart(4, '0');
+  const m = cleaned.match(/^(\d{1,4})$/);
+  if (m) return m[1].padStart(4, '0');
+  return raw;
+}
+
+function getItemDocName_(item) {
+  if (!item) return null;
+  const uri = item.gcsUri;
+  if (!uri) return null;
+  const s = String(uri).trim();
+  if (!s) return null;
+  const parts = s.split('/');
+  return parts[parts.length - 1] || null;
 }
 
 function getItemNormalizedIndex_(item, fallbackIdx) {

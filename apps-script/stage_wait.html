@@ -67,6 +67,10 @@
 
     <script>
       const action = "<?= DATA.action ?>";
+      const MODE_BY_ACTION = {
+        stage_upload_and_process_cash: 'efectivo',
+        stage_upload_and_process_card: 'tarjeta'
+      };
 
       function setStatus(text) {
         document.getElementById('descText').textContent = text || '';
@@ -140,8 +144,9 @@
       }
 
       const STEP_DEFS = {
-        upload:   { id: 'upload', pending: 'Preprocesando archivos…', done: 'Archivos listos' },
-        process:  { id: 'process', pending: 'Analizando archivos…', done: 'Información extraída' },
+        upload:   { id: 'upload', pending: 'Subiendo archivos…', done: 'Archivos listos' },
+        statement:{ id: 'statement', pending: 'Procesando estado de cuenta…', done: 'Estado de cuenta procesado' },
+        process:  { id: 'process', pending: 'Procesando gastos…', done: 'Gastos procesados' },
         write:    { id: 'write', pending: 'Escribiendo resultados…', done: 'Resultados escritos' },
         cover:    { id: 'cover', pending: 'Creando carátula…', done: 'Carátula creada' },
         generate: { id: 'generate', pending: 'Generando PDF/Excel…', done: 'PDF/Excel generados' },
@@ -183,10 +188,11 @@
           })[action]();
       }
 
-      function runUploadAndProcess() {
+      function runUploadAndProcessCash() {
+        const mode = MODE_BY_ACTION.stage_upload_and_process_cash;
         clearSteps();
         addStep(STEP_DEFS.upload, 'pending');
-        setStatus('Preprocesando archivos…');
+        setStatus(STEP_DEFS.upload.pending);
         google.script.run
           .withSuccessHandler((uploadRes) => {
             if (!uploadRes?.ok) {
@@ -197,7 +203,7 @@
 
             setStepState('upload', 'done');
             addStep(STEP_DEFS.process, 'pending');
-            setStatus('Analizando archivos…');
+            setStatus(STEP_DEFS.process.pending);
             google.script.run
               .withSuccessHandler((processRes) => {
                 if (!processRes?.ok) {
@@ -208,7 +214,18 @@
 
                 setStepState('process', 'done');
                 addStep(STEP_DEFS.write, 'pending');
-                setStatus('Escribiendo resultados…');
+                setStatus(STEP_DEFS.write.pending);
+
+                const items = processRes?.items || processRes?.payload?.items || [];
+                if (processRes?.skipWrite) {
+                  setStepState('write', 'done');
+                  renderDone(true, processRes?.message || 'Archivos procesados.', {
+                    upload: uploadRes?.payload || null,
+                    process: processRes?.payload || null,
+                    write: processRes?.payload || null
+                  });
+                  return;
+                }
 
                 google.script.run
                   .withSuccessHandler((writeRes) => {
@@ -229,18 +246,107 @@
                     setStepState('write', 'error');
                     renderDone(false, err?.message || String(err), null);
                   })
-                  .stage2_write_results(processRes?.items || processRes?.payload?.items || []);
+                  .stage2_write_results(items);
               })
               .withFailureHandler((err) => {
                 setStepState('process', 'error');
                 renderDone(false, err?.message || String(err), null);
               })
-              .stage2_process_analyze();
+              .stage2_process_analyze_by_mode(mode);
           })
           .withFailureHandler((err) => {
             renderDone(false, err?.message || String(err), null);
           })
-          .stage1_upload();
+          .stage1_upload(mode);
+      }
+
+      function runUploadAndProcessCard() {
+        const mode = MODE_BY_ACTION.stage_upload_and_process_card;
+        clearSteps();
+        addStep(STEP_DEFS.upload, 'pending');
+        setStatus(STEP_DEFS.upload.pending);
+        google.script.run
+          .withSuccessHandler((uploadRes) => {
+            if (!uploadRes?.ok) {
+              setStepState('upload', 'error');
+              renderDone(false, uploadRes?.message || 'Error al subir archivos.', uploadRes?.payload || null);
+              return;
+            }
+
+            setStepState('upload', 'done');
+            addStep(STEP_DEFS.statement, 'pending');
+            setStatus(STEP_DEFS.statement.pending);
+            google.script.run
+              .withSuccessHandler((statementRes) => {
+                if (!statementRes?.ok) {
+                  setStepState('statement', 'error');
+                  renderDone(false, statementRes?.message || 'Error al procesar estado de cuenta.', statementRes?.payload || null);
+                  return;
+                }
+
+                setStepState('statement', 'done');
+                addStep(STEP_DEFS.process, 'pending');
+                setStatus(STEP_DEFS.process.pending);
+                google.script.run
+                  .withSuccessHandler((processRes) => {
+                    if (!processRes?.ok) {
+                      setStepState('process', 'error');
+                      renderDone(false, processRes?.message || 'Error al procesar gastos.', processRes?.payload || null);
+                      return;
+                    }
+
+                    setStepState('process', 'done');
+                    addStep(STEP_DEFS.write, 'pending');
+                    setStatus(STEP_DEFS.write.pending);
+
+                    if (processRes?.noReceipts) {
+                      setStepState('write', 'done');
+                      renderDone(true, processRes?.message || 'Estado de cuenta procesado.', {
+                        upload: uploadRes?.payload || null,
+                        statement: statementRes?.payload || null,
+                        process: processRes?.payload || null
+                      });
+                      return;
+                    }
+
+                    google.script.run
+                      .withSuccessHandler((writeRes) => {
+                        if (!writeRes?.ok) {
+                          setStepState('write', 'error');
+                          renderDone(false, writeRes?.message || 'Error al escribir resultados.', writeRes?.payload || null);
+                          return;
+                        }
+
+                        setStepState('write', 'done');
+                        renderDone(true, writeRes?.message || 'Archivos procesados.', {
+                          upload: uploadRes?.payload || null,
+                          statement: statementRes?.payload || null,
+                          process: processRes?.payload || null,
+                          write: writeRes?.payload || null
+                        });
+                      })
+                      .withFailureHandler((err) => {
+                        setStepState('write', 'error');
+                        renderDone(false, err?.message || String(err), null);
+                      })
+                      .stage2_write_tarjeta_results(processRes?.items || [], processRes?.orphanRowIndexes || []);
+                  })
+                  .withFailureHandler((err) => {
+                    setStepState('process', 'error');
+                    renderDone(false, err?.message || String(err), null);
+                  })
+                  .stage2_process_receipts_tarjeta({ write: false });
+              })
+              .withFailureHandler((err) => {
+                setStepState('statement', 'error');
+                renderDone(false, err?.message || String(err), null);
+              })
+              .stage2_process_statement();
+          })
+          .withFailureHandler((err) => {
+            renderDone(false, err?.message || String(err), null);
+          })
+          .stage1_upload(mode);
       }
 
       function runFinalizeSteps() {
@@ -307,8 +413,10 @@
           .stage3_create_cover();
       }
 
-      if (action === 'stage_upload_and_process') {
-        runUploadAndProcess();
+      if (action === 'stage_upload_and_process_cash') {
+        runUploadAndProcessCash();
+      } else if (action === 'stage_upload_and_process_card') {
+        runUploadAndProcessCard();
       } else if (action === 'stage3_finalize') {
         runFinalizeSteps();
       } else {

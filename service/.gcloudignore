@@ -1,0 +1,22 @@
+# Local virtualenvs
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Env files
+.env
+.env.*
+
+# Local artifacts
+*.log

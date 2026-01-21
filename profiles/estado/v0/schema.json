@@ -1,0 +1,67 @@
+{
+    "type": "object",
+    "description": "Parseo de Estado de cuenta bancario.",
+    "properties": {
+        "fecha_emision": {
+            "type": "string",
+            "format": "date",
+            "description": "Fecha de emisión del estado de cuenta.",
+            "nullable": true
+        },
+        "usuario": {
+            "type": "string",
+            "description": "Nombre del usuario o titular de la cuenta bancaria.",
+            "nullable": true
+        },
+        "transacciones": {
+            "type": "array",
+            "description": "Lista de transacciones registradas en el estado de cuenta.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fecha": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Fecha de la transacción.",
+                        "nullable": true
+                    },
+                    "detalle": {
+                        "type": "string",
+                        "description": "Detalle de la transacción.",
+                        "nullable": true
+                    },
+                    "importe_origen": {
+                        "type": "number",
+                        "description": "Importe de la transacción en la moneda original.",
+                        "nullable": true
+                    },
+                    "importe_uyu": {
+                        "type": "number",
+                        "description": "Importe de la transacción en UYU, pesos uruguayos.",
+                        "nullable": true
+                    },
+                    "importe_usd": {
+                        "type": "number",
+                        "description": "Importe de la transacción en USD.",
+                        "nullable": true
+                    }
+                }
+            }
+        },
+        "total_uyu": {
+            "type": "number",
+            "description": "Total de todas las transacciones en UYU.",
+            "nullable": true
+        },
+        "total_usd": {
+            "type": "number",
+            "description": "Total de todas las transacciones en USD.",
+            "nullable": true
+        },
+        "warnings": {
+            "type": "string",
+            "description": "Advertencias o notas adicionales sobre el estado de cuenta.",
+            "nullable": true
+        }
+    }
+}

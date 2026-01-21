@@ -183,3 +183,69 @@ class FinalizeResponse(BaseModel):
     xlsm: FinalizeArtifact
     warnings: List[Warning] | None = None
     error: ErrorPayload | None = None
+
+
+# -------- Stage 2 --------
+class DocumentRef(BaseModel):
+    gcsUri: str | None = None
+    signedUrl: str | None = None
+    driveFileId: str | None = None
+    mime: str | None = None
+
+    @model_validator(mode="after")
+    def validate_one_of(cls, values: "DocumentRef") -> "DocumentRef":
+        provided = [bool(values.gcsUri), bool(values.signedUrl), bool(values.driveFileId)]
+        if sum(provided) != 1:
+            raise ValueError("Exactly one of gcsUri, signedUrl, or driveFileId is required")
+        return values
+
+
+class ProcessOptions(BaseModel):
+    profile: str | None = None
+    model: str | None = None
+
+
+class ProcessStatementRequest(BaseModel):
+    rendicionId: str
+    statement: DocumentRef
+    options: ProcessOptions | None = None
+
+
+class ProcessStatementResponse(BaseModel):
+    ok: bool
+    rendicionId: str
+    data: Any | None = None
+    meta: dict[str, Any] | None = None
+    warnings: List[Warning] | None = None
+    error: ErrorPayload | None = None
+
+
+class StatementContext(BaseModel):
+    parsed: dict[str, Any] | None = None
+
+
+class DocflowRow(BaseModel):
+    data: Any
+    meta: dict[str, Any] | None = None
+
+
+class ProcessReceiptsBatchRequest(BaseModel):
+    rendicionId: str
+    mode: Literal["efectivo", "tarjeta"]
+    receipts: List[DocumentRef]
+    statement: StatementContext | None = None
+    options: ProcessOptions | None = None
+
+    @model_validator(mode="after")
+    def validate_statement_for_mode(cls, values: "ProcessReceiptsBatchRequest") -> "ProcessReceiptsBatchRequest":
+        if values.mode == "tarjeta" and not values.statement:
+            raise ValueError("statement.parsed is required when mode=tarjeta")
+        return values
+
+
+class ProcessReceiptsBatchResponse(BaseModel):
+    ok: bool
+    rendicionId: str
+    rows: List[DocflowRow] | None = None
+    warnings: List[Warning] | None = None
+    error: ErrorPayload | None = None

@@ -6,9 +6,14 @@ from .models import (
     FinalizeResponse,
     NormalizeRequest,
     NormalizeResponse,
+    ProcessReceiptsBatchRequest,
+    ProcessReceiptsBatchResponse,
+    ProcessStatementRequest,
+    ProcessStatementResponse,
 )
 from .services.finalize import run_finalize
 from .services.normalize import run_normalize
+from .services.process_stage2 import run_process_receipts_batch, run_process_statement
 
 app = FastAPI(
     title="Rendiciones Cloud Run Service",
@@ -41,6 +46,26 @@ async def finalize(
     if not response.ok and response.error:
         status = 400 if response.error.code in {"INVALID_ARGUMENT"} else 500
         raise HTTPException(status_code=status, detail=response.error.model_dump())
+    return response
+
+
+@app.post("/v1/process_statement", response_model=ProcessStatementResponse)
+async def process_statement(
+    request: ProcessStatementRequest, settings: Settings = Depends(get_settings)
+) -> ProcessStatementResponse:
+    response = run_process_statement(request, settings)
+    if not response.ok and response.error:
+        raise HTTPException(status_code=500, detail=response.error.model_dump())
+    return response
+
+
+@app.post("/v1/process_receipts_batch", response_model=ProcessReceiptsBatchResponse)
+async def process_receipts_batch(
+    request: ProcessReceiptsBatchRequest, settings: Settings = Depends(get_settings)
+) -> ProcessReceiptsBatchResponse:
+    response = run_process_receipts_batch(request, settings)
+    if not response.ok and response.error:
+        raise HTTPException(status_code=500, detail=response.error.model_dump())
     return response
 
 

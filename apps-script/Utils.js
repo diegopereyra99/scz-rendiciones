@@ -44,6 +44,34 @@ function listDriveFiles_(folderId) {
   return files;
 }
 
+function getBaseFolder_() {
+  const ssFile = DriveApp.getFileById(SS_ID);
+  const parents = ssFile.getParents();
+  if (!parents.hasNext()) throw new Error('El formulario no tiene carpeta padre.');
+  return parents.next();
+}
+
+function getSubfolderIdByName_(parentFolder, folderName, required) {
+  const folders = parentFolder.getFoldersByName(folderName);
+  if (!folders.hasNext()) {
+    if (required) throw new Error(`No existe la carpeta: ${folderName}`);
+    return null;
+  }
+  return folders.next().getId();
+}
+
+function getModeFolderId_(mode) {
+  const base = getBaseFolder_();
+  if (mode === 'efectivo') return getSubfolderIdByName_(base, FOLDER_EFECTIVO_NAME, true);
+  if (mode === 'tarjeta') return getSubfolderIdByName_(base, FOLDER_TARJETA_NAME, true);
+  throw new Error(`Modo inválido: ${mode}`);
+}
+
+function getStatementFolderId_() {
+  const base = getBaseFolder_();
+  return getSubfolderIdByName_(base, FOLDER_ESTADO_NAME, false);
+}
+
 function newRendicionId_() {
   // suficientemente único para tus flujos
   return Utilities.getUuid().slice(0, 8);
@@ -56,14 +84,21 @@ function buildRendicionId_() {
 }
 
 // Nombre del zip en GCS
-function buildInputsZipObjectName_() {
+function buildInputsZipObjectName_(mode) {
   // rendiciones/<rendicionId>/inputs/inputs_<timestamp>.zip
   const ts = Utilities.formatDate(new Date(), 'UTC', 'yyyyMMdd_HHmmss');
-  return `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}/inputs/inputs_${ts}.zip`;
+  const suffix = mode ? `inputs/${mode}/inputs_${ts}.zip` : `inputs/inputs_${ts}.zip`;
+  return `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}/${suffix}`;
 }
 
-function buildZipFromDriveFolder_(folderId) {
-  const files = listDriveFiles_(folderId);
+function buildZipFromDriveFolder_(folderId, filesOrIds) {
+  let files = [];
+  if (Array.isArray(filesOrIds) && filesOrIds.length) {
+    files = filesOrIds.map((f) => (typeof f === 'string' ? { id: f } : f))
+      .filter((f) => f && f.id);
+  } else {
+    files = listDriveFiles_(folderId);
+  }
   if (!files.length) throw new Error('No hay archivos para zipear.');
 
   const blobs = [];
@@ -90,5 +125,3 @@ function clearAllNotes() {
     sh.getDataRange().clearNote(); // borra TODAS las notas de la hoja
   });
 }
-
-
