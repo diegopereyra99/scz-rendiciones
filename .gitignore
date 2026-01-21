@@ -1,5 +1,6 @@
 data/
 output/
+estados/
 
 *.pyc
 __pycache__/

@@ -32,7 +32,7 @@
                     },
                     "importe_origen": {
                         "type": "number",
-                        "description": "Importe de la transacción en la moneda original.",
+                        "description": "Importe de la transacción en la moneda original (si no es UYU).",
                         "nullable": true
                     },
                     "importe_uyu": {

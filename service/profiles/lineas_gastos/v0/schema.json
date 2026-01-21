@@ -16,13 +16,11 @@
       },
       "Factura exterior": {
         "type": "BOOLEAN",
-        "description": "True si la factura corresponde a un gasto en el exterior (fuera de Uruguay).",
-        "nullable": true
+        "description": "True si la factura corresponde a un gasto en el exterior (fuera de Uruguay)."
       },
       "Contiene RUT comprador": {
         "type": "BOOLEAN",
-        "description": "Indica si en el comprobante se incluye el numero 214843360014, que corresponde al RUT de Scienza/Murry.",
-        "nullable": true
+        "description": "Indica si en el comprobante se incluye el numero 214843360014, que corresponde al RUT de Scienza/Murry."
       },
       "Proveedor": {
         "type": "STRING",
