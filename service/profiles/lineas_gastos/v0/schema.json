@@ -59,15 +59,15 @@
       },
       "Descuentos": {
         "type": "NUMBER",
-        "description": "Monto total de descuentos explícitos en el comprobante."
+        "description": "Monto total de descuentos en el pago (post-factura)."
       },
-      "Propina": {
+      "Gastos sin comprobante": {
         "type": "NUMBER",
-        "description": "Monto de propina explícito, si corresponde."
+        "description": "Gastos extra no incluidos en la factura."
       },
       "Importe a rendir": {
         "type": "NUMBER",
-        "description": "Monto total a rendir, después de descuentos y propinas. Lo que efectivamente se gastó.",
+        "description": "Monto total a rendir. Lo que efectivamente se gastó, incluyendo gastos sin comprobante.",
         "nullable": true
       },
       "Tipo de gasto": {
@@ -124,7 +124,7 @@
               "description": "Nombre del campo del esquema asociado al problema. Usar 'general' únicamente para advertencias que afecten a todo el comprobante.",
               "enum": [
                 "general", "Numero de Factura", "Fecha de factura", "Importe facturado", "Importe a rendir", "Moneda", "Proveedor",
-                "Tipo de gasto", "Base 22", "Base 10", "Exento", "Descuentos", "Propina", "Factura exterior", "Contiene RUT comprador"
+                "Tipo de gasto", "Base 22", "Base 10", "Exento", "Descuentos", "Gastos sin comprobante", "Factura exterior", "Contiene RUT comprador"
               ]
             },
             "mensaje": {

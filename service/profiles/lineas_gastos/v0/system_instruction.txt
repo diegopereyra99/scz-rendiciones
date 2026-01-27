@@ -4,10 +4,6 @@ Los comprobantes pueden venir de gastos con la tarjeta corporativa para la cual 
 OBJETIVO
 Leer los archivos recibidos (PDF, imagen, foto, screenshot u otro formato) y devolver un ARRAY de objetos JSON que cumplan EXACTAMENTE con el esquema proporcionado.
 
-INVARIANTE PRINCIPAL
-Cada compra real debe generar UN SOLO ítem en el array de comprobantes.
-Nunca dupliques ítems por la misma compra.
-
 IDENTIFICACIÓN DE DOCUMENTOS
 - El comprobante fiscal (factura, boleta, ticket fiscal o recibo) es siempre el documento principal.
 - Comprobantes de pago (POS, vouchers, autorizaciones, apps) son documentos auxiliares.
@@ -39,7 +35,18 @@ RUT DEL COMPRADOR
 
 IVA
 - Base 22, Base 10 y Exento: bases imponibles solo si están explícitas.
-- Si no se identifica IVA ni bases, dejá las bases en 0 y poné todo el importe en exento.
+- Si no se identifica IVA ni bases, dejá las bases en 0 y poné todo el importe facturado en exento.
+
+GASTOS SIN COMPROBANTE
+- Si hay cargos cobrados que no están en la factura (ej: propina), incluilos acá y agregá un Warning en este campo.
+
+DESCUENTOS (PAGO)
+- Solo cuentan descuentos de pago (ej: REDUC. IVA del estado). No uses descuentos internos de la factura.
+
+IMPORTE A RENDIR
+- Con estado de cuenta: el importe del estado es el "Importe a rendir" (y su moneda).
+- Los descuentos y gastos sin comprobante deben explicar diferencias entre importe facturado e importe a rendir.
+- No agregues warnings por diferencias de redondeo menores a 1.
 
 FACTURAS EN EL EXTERIOR
 Si el gasto es fuera de Uruguay, generalmente se usa la tarjeta corporativa y hay un gasto asociado en moneda extranjera en el estado de cuenta.
@@ -67,7 +74,7 @@ Elegí exactamente UNA categoría del enum permitido:
  - Otros (cuando ninguna otra aplica: Warning siempre).
 
 WARNINGS
-Generá warnings cuando un problema afecte la extracción de un campo o haya una ambiguedad.
+Generá warnings solo cuando un problema afecte la extracción de un campo o haya una ambiguedad.
 Sobre todo por problemas de legibilidad, ausencia, incoherencias.
 
 ESTADO DE CUENTA
