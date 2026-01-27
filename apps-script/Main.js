@@ -54,7 +54,7 @@ function stage_upload_and_process_cash() {
 }
 
 function stage_upload_and_process_card() {
-  return stage_upload_and_process_('tarjeta');
+  return stage_card_low_writes_();
 }
 
 function stage_upload_and_process_(mode) {
@@ -80,6 +80,387 @@ function stage_upload_and_process_(mode) {
       write: writeRes.payload || null
     }
   };
+}
+
+/** ---------- Tarjeta low-writes pipeline ---------- */
+
+function stage_card_low_writes_() {
+  try {
+    const rendicionId = buildRendicionId_();
+    const statementFile = getSingleStatementFile_();
+    const statementFingerprint = buildStatementFingerprint_(statementFile);
+
+    let st = jobStateGet_();
+    let resetNotice = null;
+    if (st?.statementFingerprint && st.statementFingerprint !== statementFingerprint) {
+      resetNotice = 'Cambió el estado de cuenta, se reinicia la rendición.';
+      resetFullJob_();
+      st = jobStateGet_();
+    }
+
+    const prevBaseRowCount = st?.baseRowCount || 0;
+    const prevOrphansCount = st?.lastOrphansRowCount || 0;
+
+    const folderId = getModeFolderId_('tarjeta');
+    const receiptFiles = listDriveFiles_(folderId);
+    const receiptsFingerprint = buildReceiptsFingerprint_(receiptFiles);
+
+    const baseState = Object.assign({}, st, {
+      rendicionId,
+      mode: 'tarjeta',
+      sourceFolderId: folderId,
+      statementFingerprint,
+      receiptsFingerprint,
+      lastRunAt: new Date().toISOString()
+    });
+    jobStateSet_(baseState);
+
+    const statementRes = processStatementLowWrites_(statementFile, statementFingerprint, baseState);
+    if (!statementRes?.ok) return statementRes;
+    const statementData = statementRes.statementData || {};
+
+    const planRes = buildRowsPlanFromStatement_(statementData);
+    if (!planRes?.ok) return planRes;
+    const rowsPlan = planRes.rowsPlan || [];
+    const lineToSheetRow = planRes.lineToSheetRow || {};
+
+    jobStateSet_(Object.assign({}, baseState, {
+      lastEstadoCuenta: statementData,
+      lastStatementFile: {
+        id: statementFile.id,
+        size: statementFile.size,
+        updated: statementFile.updated
+      },
+      lineToSheetRow,
+      reductionsMeta: planRes.reductionsMeta || null,
+      baseRowCount: rowsPlan.length
+    }));
+
+    const baseWriteRes = writeBaseTableLowWrites_(rowsPlan);
+    if (!baseWriteRes?.ok) return baseWriteRes;
+
+    const uploadRes = runStage1Upload_('tarjeta');
+    if (!uploadRes?.ok) return uploadRes;
+
+    const stAfterUpload = jobStateGet_();
+    const normalizedItems = getNormalizedItemsForMode_(stAfterUpload, 'tarjeta');
+
+    const receiptsCacheKey = buildReceiptsCacheKey_(statementFingerprint, receiptsFingerprint);
+    const patchesRes = processReceiptsToPatches_(statementData, normalizedItems, lineToSheetRow, stAfterUpload, receiptsCacheKey);
+    if (!patchesRes?.ok) return patchesRes;
+
+    const applyRes = applyPatchesLowWrites_(patchesRes.rowPatches, patchesRes.rowStatus, rowsPlan.length);
+    if (!applyRes?.ok) return applyRes;
+
+    const prevOrphansStart = START_ROW + prevBaseRowCount;
+    const orphansRes = writeOrphansConflictsSection_(
+      patchesRes.orphans,
+      patchesRes.conflicts,
+      rowsPlan.length,
+      prevOrphansStart,
+      prevOrphansCount
+    );
+    if (!orphansRes?.ok) return orphansRes;
+
+    jobStateSet_(Object.assign({}, jobStateGet_(), {
+      baseRowCount: rowsPlan.length,
+      lineToSheetRow,
+      assignedReceiptBySheetRow: patchesRes.assignedReceiptBySheetRow || null,
+      orphansSummary: patchesRes.orphans || [],
+      conflictsSummary: patchesRes.conflicts || [],
+      fieldConflictsSummary: applyRes?.payload?.fieldConflicts || [],
+      lastOrdenArchivos: patchesRes.orderList && patchesRes.orderList.length ? patchesRes.orderList : null,
+      lastOrphansRowCount: orphansRes?.payload?.count || 0,
+      statementFingerprint,
+      receiptsFingerprint,
+      lastRunAt: new Date().toISOString()
+    }));
+
+    const msgParts = [];
+    if (resetNotice) msgParts.push(resetNotice);
+    msgParts.push(`Base: ${rowsPlan.length} filas.`);
+    msgParts.push(`Comprobantes: ${(normalizedItems || []).length}.`);
+    msgParts.push(`Orphans: ${(patchesRes.orphans || []).length}, Conflicts: ${(patchesRes.conflicts || []).length}.`);
+
+    return {
+      ok: true,
+      message: msgParts.join(' '),
+      payload: {
+        base: baseWriteRes.payload || null,
+        upload: uploadRes.payload || null,
+        orphans: patchesRes.orphans?.length || 0,
+        conflicts: patchesRes.conflicts?.length || 0
+      }
+    };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+}
+
+function resetFullJob_() {
+  clearAllRows();
+}
+
+function resetJobState_() {
+  PropertiesService.getDocumentProperties().deleteProperty('REN_JOB_STATE');
+}
+
+const CACHE_KEYS_PROP = 'REN_CACHE_KEYS';
+
+function cacheGetJson_(key) {
+  if (!key) return null;
+  const cache = CacheService.getDocumentCache();
+  const raw = cache.get(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
+function cachePutJson_(key, value, ttlSeconds) {
+  if (!key) return;
+  const cache = CacheService.getDocumentCache();
+  const raw = JSON.stringify(value || {});
+  if (raw.length > 90000) return; // avoid cache limit issues
+  cache.put(key, raw, ttlSeconds || 21600);
+  trackCacheKey_(key);
+}
+
+function trackCacheKey_(key) {
+  const props = PropertiesService.getDocumentProperties();
+  const raw = props.getProperty(CACHE_KEYS_PROP);
+  const list = raw ? JSON.parse(raw) : [];
+  if (list.indexOf(key) === -1) list.push(key);
+  props.setProperty(CACHE_KEYS_PROP, JSON.stringify(list));
+}
+
+function resetCache_() {
+  const props = PropertiesService.getDocumentProperties();
+  const raw = props.getProperty(CACHE_KEYS_PROP);
+  if (!raw) return;
+  const list = JSON.parse(raw);
+  const cache = CacheService.getDocumentCache();
+  list.forEach((key) => cache.remove(key));
+  props.deleteProperty(CACHE_KEYS_PROP);
+}
+
+function buildStatementFingerprint_(statementFile) {
+  if (!statementFile) return '';
+  return `${statementFile.id}:${statementFile.updated}:${statementFile.size}`;
+}
+
+function buildReceiptsFingerprint_(files) {
+  const hash = buildFilesDigest_(files || []);
+  return hash ? `receipts:${hash}` : 'receipts:empty';
+}
+
+function buildFilesDigest_(files) {
+  const parts = (files || []).map((f) => `${f.id}:${f.updated || ''}:${f.size || ''}`);
+  parts.sort();
+  const raw = parts.join('|');
+  if (!raw) return '';
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, raw);
+  return digest.map((b) => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
+}
+
+function buildReceiptsCacheKey_(statementFingerprint, receiptsFingerprint) {
+  if (!statementFingerprint || !receiptsFingerprint) return '';
+  return `REN_RECEIPTS_${statementFingerprint}_${receiptsFingerprint}`;
+}
+
+function processStatementLowWrites_(statementFile, fingerprint, st) {
+  const cacheKey = `REN_STATEMENT_${fingerprint}`;
+  const cached = cacheGetJson_(cacheKey);
+  if (cached) {
+    return { ok: true, statementData: cached, reused: true, cache: true };
+  }
+  if (st?.statementFingerprint === fingerprint && st?.lastEstadoCuenta) {
+    return { ok: true, statementData: st.lastEstadoCuenta, reused: true, cache: false };
+  }
+
+  const statementReq = {
+    rendicionId: st?.rendicionId || buildRendicionId_(),
+    statement: {
+      driveFileId: statementFile.id,
+      mime: statementFile.mimeType || null
+    }
+  };
+
+  const statementRes = callCloudRunJson_('/v1/process_statement', statementReq);
+  if (!statementRes?.ok) throw new Error(`process_statement ok=false: ${JSON.stringify(statementRes)}`);
+  const statementData = statementRes.data || {};
+
+  cachePutJson_(cacheKey, statementData, 21600);
+  return { ok: true, statementData, reused: false, cache: false };
+}
+
+function buildRowsPlanFromStatement_(statementData) {
+  const txs = Array.isArray(statementData?.transacciones) ? statementData.transacciones : [];
+  if (!txs.length) {
+    return { ok: false, message: 'No se pudieron extraer líneas del estado de cuenta.' };
+  }
+
+  const rowsPlan = [];
+  const lineToSheetRow = {};
+  const reductionsMeta = [];
+
+  txs.forEach((tx, idx) => {
+    const lineIndex = idx + 1;
+    const detail = tx?.detalle || tx?.descripcion || tx?.concepto || '';
+    const amountRes = mapStatementAmount_(tx);
+    const isReduc = isReducIvaLine_(detail);
+
+    if (isReduc && rowsPlan.length) {
+      const last = rowsPlan[rowsPlan.length - 1];
+      const prev = getNumeric_(last['Descuentos']) || 0;
+      const add = Math.abs(Number(amountRes.amount || 0));
+      last['Descuentos'] = prev + add;
+      lineToSheetRow[lineIndex] = START_ROW + rowsPlan.length - 1;
+      reductionsMeta.push({ lineIndex, appliedTo: lineToSheetRow[lineIndex], amount: add, detail });
+      return;
+    }
+
+    if (isReduc && !rowsPlan.length) {
+      reductionsMeta.push({ lineIndex, appliedTo: null, amount: Math.abs(Number(amountRes.amount || 0)), detail, orphan: true });
+      return;
+    }
+
+    const row = {
+      'Fecha de factura': tx?.fecha || null,
+      'Proveedor': detail || null,
+      'Importe a rendir': amountRes.amount,
+      'Moneda': amountRes.currency,
+      'Descuentos': 0
+    };
+    row.__status = 'MISSING';
+    rowsPlan.push(row);
+    lineToSheetRow[lineIndex] = START_ROW + rowsPlan.length - 1;
+  });
+
+  return { ok: true, rowsPlan, lineToSheetRow, reductionsMeta };
+}
+
+function isReducIvaLine_(text) {
+  if (!text) return false;
+  return String(text).toLowerCase().indexOf('reduc. iva ley') !== -1;
+}
+
+function processReceiptsToPatches_(statementData, normalizedItems, lineToSheetRow, st, cacheKey) {
+  if (cacheKey) {
+    const cached = cacheGetJson_(cacheKey);
+    if (cached) return Object.assign({ ok: true, cached: true }, cached);
+  }
+  const items = normalizedItems || [];
+  if (!items.length) {
+    return {
+      ok: true,
+      message: 'No hay comprobantes para procesar.',
+      rowPatches: {},
+      rowStatus: {},
+      orphans: [],
+      conflicts: [],
+      assignedReceiptBySheetRow: {}
+    };
+  }
+
+  const receipts = items.map((it) => ({
+    gcsUri: it.gcsUri,
+    mime: it.mime || it.mimeType || null
+  })).filter((it) => !!it.gcsUri);
+
+  const rows = [];
+  const batches = chunkArray_(receipts, PROCESS_BATCH_SIZE);
+  batches.forEach((batch) => {
+    const receiptsReq = {
+      rendicionId: st?.rendicionId || buildRendicionId_(),
+      mode: 'tarjeta',
+      statement: { parsed: statementData },
+      receipts: batch
+    };
+    const receiptsRes = callCloudRunJson_('/v1/process_receipts_batch', receiptsReq);
+    if (!receiptsRes?.ok) throw new Error(`process_receipts_batch ok=false: ${JSON.stringify(receiptsRes)}`);
+    if (Array.isArray(receiptsRes.rows)) rows.push.apply(rows, receiptsRes.rows);
+  });
+
+  const receiptItems = flattenDocflowRows_(rows);
+  const orderList = buildOrderListFromItems_(receiptItems);
+  const rowPatches = {};
+  const rowStatus = {};
+  const orphans = [];
+  const conflicts = [];
+  const assignedReceiptBySheetRow = {};
+
+  receiptItems.forEach((item) => {
+    const idx = extractStatementIdx_(item);
+    const source = extractSourceKey_(item) || '';
+    const targetRow = idx && lineToSheetRow ? lineToSheetRow[idx] : null;
+
+    if (targetRow) {
+      if (assignedReceiptBySheetRow[targetRow] && assignedReceiptBySheetRow[targetRow] !== source) {
+        rowStatus[targetRow] = 'CONFLICT';
+        conflicts.push({
+          type: 'duplicate_match',
+          source,
+          matchIndex: idx,
+          targetRow,
+          fields: scrubInternalKeys_(Object.assign({}, item))
+        });
+        return;
+      }
+      assignedReceiptBySheetRow[targetRow] = source;
+      const patch = buildReceiptPatch_(item);
+      if (!rowPatches[targetRow]) rowPatches[targetRow] = {};
+      Object.keys(patch).forEach((k) => {
+        if (rowPatches[targetRow][k] === undefined || rowPatches[targetRow][k] === '' || rowPatches[targetRow][k] === null) {
+          rowPatches[targetRow][k] = patch[k];
+        }
+      });
+      if (!rowStatus[targetRow]) rowStatus[targetRow] = 'MATCHED';
+      return;
+    }
+
+    orphans.push({
+      source,
+      matchIndex: idx || null,
+      observacion: extractReceiptObservation_(item),
+      fields: scrubInternalKeys_(Object.assign({}, item))
+    });
+  });
+
+  const result = {
+    ok: true,
+    message: `Comprobantes procesados: ${receiptItems.length || 0}.`,
+    rowPatches,
+    rowStatus,
+    orphans,
+    conflicts,
+    assignedReceiptBySheetRow,
+    orderList
+  };
+  if (cacheKey) {
+    cachePutJson_(cacheKey, result, 21600);
+  }
+  return result;
+}
+
+function buildReceiptPatch_(item) {
+  const fields = item?.fields || item || {};
+  const out = {};
+  Object.keys(fields).forEach((key) => {
+    if (key === 'Warnings' || key === 'warnings') return;
+    if (key === 'Estado de cuenta' || key === 'Estado_de_cuenta') return;
+    if (key === '__statement_idx' || key === '__doc_names') return;
+    out[key] = fields[key];
+  });
+  return out;
+}
+
+function extractReceiptObservation_(item) {
+  const st = item?.['Estado de cuenta'] || item?.estadoCuenta || item?.estado_cuenta || null;
+  const obs = st?.observacion || item?.observacion || item?.observation || null;
+  return obs || '';
 }
 
 function runStage1Upload_(mode) {
@@ -898,18 +1279,19 @@ function stage3_generate_outputs(coverGcsUri) {
   const xlsmValues = buildXlsmValuesFromSheet_();
   if (!xlsmValues.length) throw new Error('No hay valores para mandar al XLSM.');
 
+  const statementInput = mode === 'tarjeta' ? buildStatementInputForFinalize_(st) : null;
+  const finalItems = statementInput ? [statementInput].concat(orderedItems) : orderedItems;
+
   const req = {
     rendicionId: st.rendicionId,
     inputs: {
       cover: coverGcsUri ? { gcsUri: coverGcsUri } : undefined,
-      normalizedItems: orderedItems,
+      normalizedItems: finalItems,
       xlsmTemplate: {gcsUri: 'gs://scz-uy-rendiciones/templates/rendiciones_macro_template.xlsm'},
       xlsmValues
     },
-    output: {
-      driveFolderId: getOutputFolderId_(),
-      gcsPrefix: st.gcsPrefix
-    },
+    // TODO: si drive api enabled entonces usar eso, sino gcsPrefix
+    output: st.gcsPrefix ? { gcsPrefix: st.gcsPrefix } : { driveFolderId: getOutputFolderId_() },
     options: {
       pdfName: `RENDREQ-XXXX_${st.rendicionId}.pdf`,
       xlsmName: `RENDREQ-XXXX_${st.rendicionId}.xlsm`,
@@ -949,6 +1331,52 @@ function stage3_download_outputs(pdfUri, xlsmUri) {
   }
 
   return { ok: true, message: 'Archivos descargados a Drive.', payload: { saved, pdfUri, xlsmUri } };
+}
+
+function buildStatementInputForFinalize_(st) {
+  const cachedFingerprint = st?.statementFingerprint || null;
+  const cachedGcs = st?.statementGcsUri || null;
+  const cachedFile = st?.lastStatementFile || null;
+
+  if (cachedFingerprint && cachedGcs) {
+    return { gcsUri: cachedGcs, mime: cachedFile?.mimeType || null };
+  }
+
+  let file = cachedFile;
+  if (!file || !file.id) {
+    try {
+      file = getSingleStatementFile_();
+    } catch (err) {
+      return null;
+    }
+  }
+
+  const fingerprint = buildStatementFingerprint_(file);
+  if (st?.statementGcsUri && st?.statementFingerprint === fingerprint) {
+    return { gcsUri: st.statementGcsUri, mime: file?.mimeType || null };
+  }
+
+  const gcsUri = uploadStatementFileToGCS_(file, fingerprint);
+  jobStateSet_(Object.assign({}, jobStateGet_(), {
+    statementFingerprint: fingerprint,
+    statementGcsUri: gcsUri,
+    lastStatementFile: {
+      id: file.id,
+      name: file.name,
+      mimeType: file.mimeType || null,
+      size: file.size,
+      updated: file.updated
+    }
+  }));
+  return { gcsUri, mime: file?.mimeType || null };
+}
+
+function uploadStatementFileToGCS_(file, fingerprint) {
+  if (!file || !file.id) throw new Error('Estado de cuenta: archivo inválido para subir a GCS.');
+  const driveFile = DriveApp.getFileById(file.id);
+  const blob = driveFile.getBlob().setName(file.name || 'estado.pdf');
+  const objectName = buildStatementObjectName_(fingerprint, file.name || 'estado.pdf');
+  return uploadBlobToGCS_(GCS_BUCKET, objectName, blob);
 }
 
 

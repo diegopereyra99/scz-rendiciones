@@ -364,11 +364,24 @@ function clearAllRows() {
   const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error('Sheet not found: ' + SHEET_NAME);
 
-  const totalRows = STOP_ROW - START_ROW + 1;
-  if (totalRows <= 0) return;
+  const props = PropertiesService.getDocumentProperties();
+  const lastCount = parseInt(props.getProperty(PROP_LAST_ITEM_COUNT) || '0', 10);
+  const totalRows = Math.max(DEFAULT_MAX_ROWS, lastCount || 0);
+  if (totalRows <= 0) {
+    if (typeof resetJobState_ === 'function') {
+      resetJobState_();
+    }
+    if (typeof resetCache_ === 'function') {
+      resetCache_();
+    }
+    return;
+  }
 
   const cols = getWriteColumnIndexes_();
   const tickCol = colLetterToIndex(WARNINGS_OK_COL_LETTER);
+  const st = typeof jobStateGet_ === 'function' ? jobStateGet_() : {};
+  const baseRowCount = st?.baseRowCount || lastCount || 0;
+  const orphansCount = st?.lastOrphansRowCount || 0;
 
   // Clear values/notes while preserving any formulas that might exist
   cols.forEach((col) => {
@@ -386,10 +399,26 @@ function clearAllRows() {
     restoreBackgroundFromTemplateColumn_(sheet, col, START_ROW, totalRows);
   });
 
+  if (orphansCount && baseRowCount) {
+    cols.forEach((col) => {
+      const rng = sheet.getRange(START_ROW + baseRowCount, col, orphansCount, 1);
+      rng.clearContent();
+      rng.clearNote();
+      restoreBackgroundFromTemplateColumn_(sheet, col, START_ROW + baseRowCount, orphansCount);
+    });
+  }
+
   // Reset metadata/state
   deleteRowMetaRange_(START_ROW, totalRows);
   PropertiesService.getDocumentProperties().setProperty(PROP_LAST_ITEM_COUNT, '0');
   updateHeaderCompletionCell_(sheet);
+
+  if (typeof resetJobState_ === 'function') {
+    resetJobState_();
+  }
+  if (typeof resetCache_ === 'function') {
+    resetCache_();
+  }
 }
 
 function isEmptyValue_(v) {
@@ -401,7 +430,9 @@ function isEmptyValue_(v) {
 function getLastDataRow_(sh) {
   const anchorLetter = FIELD_COLUMN_MAP['Importe a rendir'] || 'G';
   const col = colLetterToIndex(anchorLetter);
-  const last = STOP_ROW
+  const props = PropertiesService.getDocumentProperties();
+  const lastCount = parseInt(props.getProperty(PROP_LAST_ITEM_COUNT) || '0', 10);
+  const last = Math.max(STOP_ROW, START_ROW + (lastCount || 0) - 1);
   if (last < START_ROW) return START_ROW - 1;
 
   const vals = sh.getRange(START_ROW, col, last - START_ROW + 1, 1).getValues();

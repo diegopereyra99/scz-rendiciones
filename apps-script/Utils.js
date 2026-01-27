@@ -37,7 +37,13 @@ function listDriveFiles_(folderId) {
     // salteá basura típica
     const name = f.getName();
     if (name.startsWith('~$') || name === '.DS_Store') continue;
-    files.push({ id: f.getId(), name, created: f.getDateCreated().getTime() });
+    files.push({
+      id: f.getId(),
+      name,
+      created: f.getDateCreated().getTime(),
+      size: f.getSize(),
+      updated: f.getLastUpdated().getTime()
+    });
   }
   // orden determinístico: por nombre, y fallback por fecha
   files.sort((a, b) => (a.name.localeCompare(b.name) || a.created - b.created));
@@ -89,6 +95,12 @@ function buildInputsZipObjectName_(mode) {
   const ts = Utilities.formatDate(new Date(), 'UTC', 'yyyyMMdd_HHmmss');
   const suffix = mode ? `inputs/${mode}/inputs_${ts}.zip` : `inputs/inputs_${ts}.zip`;
   return `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}/${suffix}`;
+}
+
+function buildStatementObjectName_(fingerprint, filename) {
+  const safeName = (filename || 'estado.pdf').replace(/[^A-Za-z0-9._-]/g, '_');
+  const safeFp = fingerprint ? String(fingerprint).replace(/[^A-Za-z0-9._-]/g, '_') : Utilities.formatDate(new Date(), 'UTC', 'yyyyMMdd_HHmmss');
+  return `rendiciones/${RENDICION_YEAR}/${RENDICION_USER}/${String(RENDICION_MONTH).padStart(2,'0')}/inputs/estado/${safeFp}_${safeName}`;
 }
 
 function buildZipFromDriveFolder_(folderId, filesOrIds) {

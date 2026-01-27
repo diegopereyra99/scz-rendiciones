@@ -5,6 +5,7 @@
 const SHEET_NAME = 'Formulario';
 const START_ROW = 14;
 const STOP_ROW = 49;
+const DEFAULT_MAX_ROWS = STOP_ROW - START_ROW + 1;
 const GCS_BUCKET = 'scz-uy-rendiciones';
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -15,9 +16,6 @@ const GEMINI_ENDPOINT =
   GEMINI_MODEL +
   ':generateContent';
 
-const PROMPT_DOC_ID = '1kP0ZIsnkHwSFppuCc-Gl9-Hk39zaNWeaT--tf67AQ8w';
-const SYSTEM_DOC_ID = '1_FzB_GNV-Fm_aEfGE0TORtTtrI9AkB0wA8ZXPMFM6b4';
-const SCHEMA_FILE_ID = '1ai53TISXDSZBG-TiGCbAKdSczd523C8j';
 
 // ✅ checkbox column (you changed this)
 const WARNINGS_OK_COL_LETTER = 'C';
@@ -45,8 +43,11 @@ const FIELD_COLUMN_MAP = {
 
 const MANUAL_FIELDS = [
   'OC',
-  'Imputación gasto'
+  'Imputación gasto',
+  'Descripcion'
 ];
+
+const STATUS_COL_LETTER = 'AB';
 
 const COLOR_WARNING = '#fff2cc';
 const COLOR_MANUAL  = '#d9ead3';
