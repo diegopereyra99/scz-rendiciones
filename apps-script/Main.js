@@ -1236,7 +1236,12 @@ function stage3_finalize() {
   const genRes = stage3_generate_outputs(coverRes.payload?.coverGcsUri || null);
   if (!genRes?.ok) return genRes;
 
-  const dlRes = stage3_download_outputs(genRes.payload?.pdfUri || null, genRes.payload?.xlsmUri || null);
+  const dlRes = stage3_download_outputs(
+    genRes.payload?.pdfUri || null,
+    genRes.payload?.xlsmUri || null,
+    genRes.payload?.pdfDriveId || null,
+    genRes.payload?.xlsmDriveId || null
+  );
   if (!dlRes?.ok) return dlRes;
 
   return { ok: true, message: 'Completado: PDF + Excel generados (Ver Drive).', payload: dlRes.payload || {} };
@@ -1282,6 +1287,10 @@ function stage3_generate_outputs(coverGcsUri) {
   const statementInput = mode === 'tarjeta' ? buildStatementInputForFinalize_(st) : null;
   const finalItems = statementInput ? [statementInput].concat(orderedItems) : orderedItems;
 
+  const output = DRIVE_API_ENABLED
+    ? { driveFolderId: getOutputFolderId_() }
+    : { gcsPrefix: st.gcsPrefix || GCS_PREFIX };
+
   const req = {
     rendicionId: st.rendicionId,
     inputs: {
@@ -1290,8 +1299,7 @@ function stage3_generate_outputs(coverGcsUri) {
       xlsmTemplate: {gcsUri: 'gs://scz-uy-rendiciones/templates/rendiciones_macro_template.xlsm'},
       xlsmValues
     },
-    // TODO: si drive api enabled entonces usar eso, sino gcsPrefix
-    output: st.gcsPrefix ? { gcsPrefix: st.gcsPrefix } : { driveFolderId: getOutputFolderId_() },
+    output,
     options: {
       pdfName: `RENDREQ-XXXX_${st.rendicionId}.pdf`,
       xlsmName: `RENDREQ-XXXX_${st.rendicionId}.xlsm`,
@@ -1299,21 +1307,22 @@ function stage3_generate_outputs(coverGcsUri) {
     }
   };
 
-  const cleanReq = JSON.parse(JSON.stringify(req));
-  const res = callCloudRunJson_('/v1/finalize', cleanReq);
+  const res = callCloudRunJson_('/v1/finalize', req);
   if (!res?.ok) throw new Error(`Finalize ok=false: ${JSON.stringify(res)}`);
 
   const pdfUri = res.pdf?.gcsUri || null;
   const xlsmUri = res.xlsm?.gcsUri || null;
+  const pdfDriveId = res.pdf?.driveFileId || null;
+  const xlsmDriveId = res.xlsm?.driveFileId || null;
 
   return {
     ok: true,
-    message: 'PDF/Excel generados en GCS.',
-    payload: { pdfUri, xlsmUri }
+    message: 'PDF/Excel generados.',
+    payload: { pdfUri, xlsmUri, pdfDriveId, xlsmDriveId }
   };
 }
 
-function stage3_download_outputs(pdfUri, xlsmUri) {
+function stage3_download_outputs(pdfUri, xlsmUri, pdfDriveId, xlsmDriveId) {
   const st = jobStateGet_();
   if (!st?.rendicionId) {
     return { ok: false, message: 'Primero corré etapa 1 (no hay rendicionId).' };
@@ -1321,16 +1330,22 @@ function stage3_download_outputs(pdfUri, xlsmUri) {
 
   const saved = {};
 
-  if (pdfUri) {
+  if (pdfDriveId) {
+    saved.pdf = true;
+    saved.pdfDriveId = pdfDriveId;
+  } else if (pdfUri) {
     saveGcsFileToDrive_(pdfUri, `RENDREQ-XXXX_${st.rendicionId}.pdf`, getOutputFolderId_());
     saved.pdf = true;
   }
-  if (xlsmUri) {
+  if (xlsmDriveId) {
+    saved.xlsm = true;
+    saved.xlsmDriveId = xlsmDriveId;
+  } else if (xlsmUri) {
     saveGcsFileToDrive_(xlsmUri, `RENDREQ-XXXX_${st.rendicionId}.xlsm`, getOutputFolderId_());
     saved.xlsm = true;
   }
 
-  return { ok: true, message: 'Archivos descargados a Drive.', payload: { saved, pdfUri, xlsmUri } };
+  return { ok: true, message: 'Archivos generados.', payload: { saved, pdfUri, xlsmUri, pdfDriveId, xlsmDriveId } };
 }
 
 function buildStatementInputForFinalize_(st) {

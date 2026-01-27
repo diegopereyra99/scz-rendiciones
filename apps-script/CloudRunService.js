@@ -1,12 +1,36 @@
+function normalizeJsonPayload_(value) {
+  if (value instanceof Date) {
+    const tz = Session.getScriptTimeZone();
+    return Utilities.formatDate(value, tz, 'yyyy-MM-dd');
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const v = normalizeJsonPayload_(item);
+      return v === undefined ? null : v;
+    });
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach((key) => {
+      const v = normalizeJsonPayload_(value[key]);
+      if (v !== undefined) out[key] = v;
+    });
+    return out;
+  }
+  if (typeof value === 'function') return undefined;
+  return value;
+}
+
 function callCloudRunJson_(path, payload) {
   // const token = getServiceAccountAccessToken();
   const url = SERVICE_URL.replace(/\/+$/, '') + path;
+  const safePayload = normalizeJsonPayload_(payload);
 
   const resp = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + getServiceAccountIdToken_() },
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify(safePayload),
     muteHttpExceptions: true
   });
 
@@ -131,7 +155,13 @@ function buildXlsmValuesFromSheet_() {
 
 function normalizeCellValue_(v) {
   // Apps Script devuelve Date/Number/Boolean/String; normalizamos a JSON friendly
-  if (v instanceof Date) return v.toISOString();
+  if (v instanceof Date) {
+    const tz = Session.getScriptTimeZone();
+    return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+  }
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return v;
+  if (v === null || v === undefined) return v;
+  if (typeof v.toString === 'function') return v.toString();
   return v;
 }
 

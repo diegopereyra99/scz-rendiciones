@@ -447,18 +447,20 @@ function assertAllChecksOk_() {
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NAME);
   if (!sh) throw new Error(`No existe la hoja: ${SHEET_NAME}`);
 
-  const lastRow = getLastDataRow_(sh);
-  if (lastRow < START_ROW) throw new Error('No hay filas con datos para finalizar.');
+  const props = PropertiesService.getDocumentProperties();
+  const lastCount = parseInt(props.getProperty(PROP_LAST_ITEM_COUNT) || '0', 10);
+  const st = typeof jobStateGet_ === 'function' ? jobStateGet_() : {};
+  const baseCount = Math.max(st?.baseRowCount || 0, lastCount || 0);
+  if (!baseCount) throw new Error('No hay filas con datos para finalizar.');
 
   const checkCol = colLetterToIndex(WARNINGS_OK_COL_LETTER);
-  const checks = sh.getRange(START_ROW, checkCol, lastRow - START_ROW + 1, 1).getValues();
+  const checks = sh.getRange(START_ROW, checkCol, baseCount, 1).getValues();
 
   const bad = [];
   for (let i = 0; i < checks.length; i++) {
     const v = checks[i][0];
     if (v !== true) bad.push(START_ROW + i);
   }
-  // TODO; Correct this check
   if (bad.length) {
     throw new Error(`No podés generar: hay checks sin marcar en filas: ${bad.slice(0, 25).join(', ')}${bad.length > 25 ? '…' : ''}`);
   }
