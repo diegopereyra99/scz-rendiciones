@@ -2,7 +2,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Automatización')
     .addItem('1) Procesar Comprobantes efectivo', 'ui_process_cash')
-    .addItem('2) Procesar Comprobantes tarjeta corporativa', 'ui_process_card')
+    .addItem('1) Procesar Comprobantes tarjeta corporativa', 'ui_process_card')
     .addItem('2) Generar Excel + PDF', 'ui_stage3_finalize')
     .addItem('Reiniciar todo', 'clearAllRows')
     .addToUi();
