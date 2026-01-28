@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+import io
 import mimetypes
 from dataclasses import replace
 from pathlib import Path
@@ -112,13 +114,54 @@ def _rasterize_pdf_bytes(pdf_bytes: bytes, base_name: str, max_side: int) -> Lis
     return sources
 
 
+def _statement_to_csv(statement_parsed: dict[str, Any]) -> str:
+    txs = statement_parsed.get("transacciones") if isinstance(statement_parsed, dict) else None
+    if not isinstance(txs, list) or not txs:
+        return ""
+
+    headers = ["idx", "fecha", "detalle", "importe_origen", "importe_uyu", "importe_usd"]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+
+    for idx, tx in enumerate(txs, start=1):
+        if not isinstance(tx, dict):
+            continue
+        row = [
+            idx,
+            tx.get("fecha", ""),
+            tx.get("detalle", ""),
+            tx.get("importe_origen", ""),
+            tx.get("importe_uyu", ""),
+            tx.get("importe_usd", ""),
+        ]
+        writer.writerow(["" if v is None else v for v in row])
+
+    total_row = [
+        "",
+        statement_parsed.get("fecha_emision", ""),
+        "TOTAL",
+        "",
+        statement_parsed.get("total_uyu", ""),
+        statement_parsed.get("total_usd", ""),
+    ]
+    writer.writerow(["" if v is None else v for v in total_row])
+
+    return buf.getvalue().strip()
+
+
 def _build_statement_prompt(base_prompt: str | None, statement_parsed: dict[str, Any]) -> str:
-    payload = json.dumps(statement_parsed, ensure_ascii=True, indent=2)
-    # TODO: convert parsed statement to csv table with 1-based int index before writing the prompt
     parts = []
     if base_prompt:
         parts.append(base_prompt.strip())
-    parts.append("ESTADO DE CUENTA PARSEADO (JSON):\n" + payload)
+
+    csv_payload = _statement_to_csv(statement_parsed)
+    if csv_payload:
+        parts.append("ESTADO DE CUENTA PARSEADO (CSV, idx 1-based):\n" + csv_payload)
+    else:
+        payload = json.dumps(statement_parsed, ensure_ascii=True, indent=2)
+        parts.append("ESTADO DE CUENTA PARSEADO (JSON):\n" + payload)
+
     parts.append(
         "Usa esta info para completar el campo 'Estado de cuenta' en cada item."
     )
@@ -258,7 +301,12 @@ def run_process_statement(request: ProcessStatementRequest, settings: Settings) 
         name = _name_from_ref(ref)
         if _is_pdf_bytes(data, name, ref.mime):
             base = Path(name).stem or "statement"
-            docs = _rasterize_pdf_bytes(data, base, settings.default_max_side_px)
+            max_side = (
+                request.options.maxSidePx
+                if request.options and request.options.maxSidePx
+                else settings.default_max_side_px
+            )
+            docs = _rasterize_pdf_bytes(data, base, max_side)
         else:
             docs = [BytesSource(name, data)]
         multi_mode = "aggregate" if len(docs) > 1 else "per_file"

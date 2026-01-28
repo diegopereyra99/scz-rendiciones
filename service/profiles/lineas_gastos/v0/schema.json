@@ -98,7 +98,7 @@
         "nullable": true,
         "properties": {
           "idx": {
-            "type": "NUMBER",
+            "type": "INTEGER",
             "description": "Indice (1-based) de la linea en el estado de cuenta.",
             "nullable": true
           },

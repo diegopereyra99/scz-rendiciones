@@ -16,6 +16,7 @@ Incluir cada fila que comience con una fecha (dd/mm/aa). Ignorar filas vacías o
   - importe_uyu: monto de la columna "Importes $".
   - importe_usd: monto de la columna "Importe US$".
 
+Si hay importe origen también hay importe USD, y cuando hay dos en una fila seguro es importe origen (izquierda) e importe usd (derecha).
 Los importes pueden estar vacíos y si tienen un signo negativo hay que extraerlo también como valor negativo.
 Los montos vienen con coma como separador decimal y punto como miles; normaliza a número decimal (ej.: "1.234,56" -> 1234.56).
 

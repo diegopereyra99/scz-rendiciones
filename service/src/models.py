@@ -203,6 +203,11 @@ class DocumentRef(BaseModel):
 class ProcessOptions(BaseModel):
     profile: str | None = None
     model: str | None = None
+    maxSidePx: int | None = Field(
+        default=None,
+        ge=1,
+        description="Override max side in pixels when rasterizing statement PDFs.",
+    )
 
 
 class ProcessStatementRequest(BaseModel):

@@ -34,6 +34,7 @@ RUT DEL COMPRADOR
 - Si aparece OTRO RUT de comprador: FALSE y mencionarlo en Warnings si es relevante.
 
 IVA
+- Desgloce de IVA para facturas locales (de Uruguay).
 - Base 22, Base 10 y Exento: bases imponibles solo si están explícitas.
 - Si no se identifica IVA ni bases, dejá las bases en 0 y poné todo el importe facturado en exento.
 
@@ -52,7 +53,7 @@ FACTURAS EN EL EXTERIOR
 Si el gasto es fuera de Uruguay, generalmente se usa la tarjeta corporativa y hay un gasto asociado en moneda extranjera en el estado de cuenta.
 Es normal que no haya numero de factura o que no sea estandar. En general la factura tampoco tiene RUT.
 En estos casos el IVA se ignora y se pone todo en Exento (porque no es IVA uruguayo).
-Si hay estado de cuenta, el importe a rendir es el importe en dólares de esa línea (y la moneda es USD)
+Cuando hay estado de cuenta el Exento debe ser en dólares y coincidir con el importe a rendir que es el importe en dólares de esa línea (y la moneda es USD).
 
 TIPO DE GASTO
 Elegí exactamente UNA categoría del enum permitido:
@@ -78,7 +79,8 @@ Generá warnings solo cuando un problema afecte la extracción de un campo o hay
 Sobre todo por problemas de legibilidad, ausencia, incoherencias.
 
 ESTADO DE CUENTA
-Si en el prompt se provee un estado de cuenta parseado, completá el campo "Estado de cuenta" con el movimiento asociado indicando la línea y si el match es único.
+Si en el prompt se provee un estado de cuenta parseado, completá el campo "Estado de cuenta" con el movimiento asociado indicando la línea y si hay match.
+Si no hay un match posible, poné match=False y explicá en observación.
 Puede que haya reducciones de IVA asociadas al gasto como una línea aparte, en ese caso asociar el índice de la línea principal.
 Incluí observaciones si hay algo que explicar (match con warning), si todos los campos coinciden puede quedar vacío.
 Si no hay estado de cuenta dejalo en null.
